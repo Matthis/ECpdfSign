@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3B6CF6"/>
+      <stop offset="1" stop-color="#14287A"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.3" cy="0.22" r="0.75">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="nib" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFD66B"/>
+      <stop offset="1" stop-color="#E8962A"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#06103A" flood-opacity="0.45"/>
+    </filter>
+    <clipPath id="circle"><circle cx="512" cy="512" r="496"/></clipPath>
+  </defs>
+
+  <!-- round badge -->
+  <circle cx="512" cy="512" r="496" fill="url(#bg)"/>
+  <circle cx="512" cy="512" r="496" fill="url(#glow)"/>
+  <circle cx="512" cy="512" r="490" fill="none" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="12"/>
+
+  <g clip-path="url(#circle)">
+    <!-- document -->
+    <g transform="rotate(-7 512 512)" filter="url(#shadow)">
+      <path d="M318 214 H600 L706 320 V786 a26 26 0 0 1 -26 26 H318 a26 26 0 0 1 -26 -26 V240 a26 26 0 0 1 26 -26 Z" fill="#FFFFFF"/>
+      <path d="M600 214 V294 a26 26 0 0 0 26 26 H706 Z" fill="#C9D6FF"/>
+      <!-- text lines -->
+      <rect x="350" y="300" width="200" height="22" rx="11" fill="#D5DEF7"/>
+      <rect x="350" y="356" width="300" height="22" rx="11" fill="#E4EAFA"/>
+      <rect x="350" y="412" width="300" height="22" rx="11" fill="#E4EAFA"/>
+      <rect x="350" y="468" width="220" height="22" rx="11" fill="#E4EAFA"/>
+      <!-- signature baseline -->
+      <rect x="350" y="712" width="300" height="8" rx="4" fill="#B9C7EE"/>
+    </g>
+
+    <!-- signature scribble -->
+    <path d="M330 660
+             C 360 560, 410 560, 400 640
+             C 392 700, 372 712, 384 668
+             C 398 616, 440 602, 450 650
+             C 458 690, 476 690, 494 640
+             C 508 604, 524 610, 526 646
+             C 528 680, 552 676, 572 640
+             C 590 610, 606 616, 616 640"
+          fill="none" stroke="#1D3FBF" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"
+          transform="rotate(-7 512 512)"/>
+
+    <!-- fountain pen nib -->
+    <g transform="translate(634 628) rotate(42)" filter="url(#shadow)">
+      <!-- barrel -->
+      <path d="M-66 -236 L-70 -620 H70 L66 -236 Z" fill="#0E1B52"/>
+      <rect x="-70" y="-620" width="36" height="384" fill="#FFFFFF" fill-opacity="0.12"/>
+      <!-- gold ring -->
+      <rect x="-72" y="-262" width="144" height="30" rx="6" fill="url(#nib)"/>
+      <!-- grip section -->
+      <path d="M-60 -232 L-52 -170 H52 L60 -232 Z" fill="#1B2C78"/>
+      <!-- nib -->
+      <path d="M0 0 C -14 -40, -44 -96, -54 -128 C -60 -150, -56 -166, -52 -172 H52 C 56 -166, 60 -150, 54 -128 C 44 -96, 14 -40, 0 0 Z"
+            fill="url(#nib)" stroke="#9A5A10" stroke-width="6" stroke-linejoin="round"/>
+      <line x1="0" y1="-8" x2="0" y2="-100" stroke="#9A5A10" stroke-width="7" stroke-linecap="round"/>
+      <circle cx="0" cy="-108" r="13" fill="#9A5A10"/>
+    </g>
+  </g>
+</svg>

@@ -41,10 +41,19 @@
   spec_checkpoint: true
   done_checkpoint: false
 - id: "5"
+  title: Remove the "Element entfernen" toolbar button
+  description: >-
+    Drop the "Element entfernen" button so the toolbar has four buttons;
+    removal stays available via the "×" on the active frame and Entf/Backspace
+    (CAP-6, toolbar constraint).
+  spec_checkpoint: true
+  done_checkpoint: false
+- id: "6"
   title: Place/date texts
   description: >-
     "Ort/Datum einfügen" adds any number of "<place>, <date>" texts with
-    today's date prefilled, placed and font-size-scaled like signatures,
-    removable, and saved with a bundled embedded Unicode font (CAP-4).
+    today's date prefilled, placed and font-size-scaled like signatures with
+    the same frame and "×", and saved with a bundled embedded Unicode font
+    (CAP-4).
   spec_checkpoint: true
   done_checkpoint: false

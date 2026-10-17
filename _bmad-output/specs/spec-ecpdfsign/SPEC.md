@@ -38,7 +38,7 @@ A vision with a privacy pain behind it: people who need to put their handwritten
       - a double-click resets it to 0°.
     - Twenty signatures across several pages can coexist.
 - **CAP-4**
-  - **intent:** User can optionally add any number of place/date texts in the format "<place>, <date>" (e.g. "München, 17.10.2026"). The date is DD.MM.YYYY, prefilled with today, and can be edited; the place is free text. Either part can be left out. Each text is placed like a signature: by default beside or below the selected signature, or centered on the current page if no signature is placed. Resizing changes the font size and never stretches the glyphs.
+  - **intent:** User can optionally add any number of place/date texts in the format "<place>, <date>" (e.g. "München, 17.10.2026"). The date is DD.MM.YYYY, prefilled with today, and can be edited; the place is free text. Either part can be left out. Each text is placed like a signature, with the same active frame and "×": by default beside or below the selected signature, or centered on the current page if no signature is placed. Resizing changes the font size and never stretches the glyphs.
   - **success:**
     - With no edits, today's date appears next to or below the signature, or centered if there is none.
     - Several texts can be placed, moved, and resized independently, without distorted glyphs.
@@ -51,7 +51,7 @@ A vision with a privacy pain behind it: people who need to put their handwritten
     - Saved under the suggested or any other new name, the source file is byte-identical before and after.
     - Saved under the original name after the OS overwrite confirmation, the original is replaced by the signed version.
 - **CAP-6**
-  - **intent:** User removes the selected placed element (a signature or a place/date text).
+  - **intent:** User removes a placed element (a signature or a place/date text) via the "×" on its active frame or with Entf/Backspace.
   - **success:** After removal, the element is gone from the preview and from the next saved PDF. It can be inserted again.
 - **CAP-7**
   - **intent:** User is warned before saving would invalidate digital signatures already present in the PDF.
@@ -62,12 +62,12 @@ A vision with a privacy pain behind it: people who need to put their handwritten
 
 ## Constraints
 
-- No fixed workflow or wizard. A toolbar at the top has exactly five buttons, usable in any order:
+- No fixed workflow or wizard. A toolbar at the top has exactly four buttons, usable in any order:
   - "PDF Öffnen" (file open dialog)
   - "Ort/Datum einfügen"
   - "PNG Unterschrift einfügen"
-  - "Element entfernen"
   - "Speichern" (save-as dialog)
+- There is no toolbar button for removing elements; that is done via the "×" on the element's frame.
 - Layout below the toolbar, like a print dialog:
   - Left: a narrow, vertically scrollable strip of page thumbnails, sized so that about 3 are visible at once.
   - Right: the selected page, shown large, where signatures and texts are placed.
@@ -99,4 +99,4 @@ A vision with a privacy pain behind it: people who need to put their handwritten
 
 ## Open Questions
 
-- Can place/date texts be rotated like signatures? Decide in story 5.
+- Can place/date texts be rotated like signatures? Decide in story 6.

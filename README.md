@@ -98,14 +98,7 @@ ECpdfSign/
 
 ## How this project is built
 
-ECpdfSign is also a learning project for AI-assisted software development.
-It is developed with [Claude Code](https://claude.com/claude-code) following the lean **Spec → Build** flow of the [BMAD Method](https://github.com/bmad-code-org/BMAD-METHOD):
-
-1. **Spec** — a short `SPEC.md` describes why, what, constraints and non-goals
-2. **Stories** — the spec is broken down into small, buildable stories
-3. **Build** — each story goes through clarify → plan → implement → review
-4. **Commit** — after every finished story
-
+ECpdfSign is a slim [BMAD](https://github.com/bmad-code-org/BMAD-METHOD) **Spec → Build** project, developed with [Claude Code](https://claude.com/claude-code).
 Specs and stories live in [`_bmad-output/`](./_bmad-output).
 
 ## Roadmap

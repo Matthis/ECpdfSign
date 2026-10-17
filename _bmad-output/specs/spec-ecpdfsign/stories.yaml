@@ -1,0 +1,47 @@
+- id: "1"
+  title: Toolbar shell, PDF open and page preview
+  description: >-
+    Replace the template UI with the German five-button toolbar and implement
+    "PDF Öffnen" with a scrollable thumbnail strip on the left, the selected
+    page large on the right, and a clear message for password-protected PDFs
+    (CAP-1). Other buttons stay disabled until their story lands; CSP is
+    locked down per SPEC constraints.
+  spec_checkpoint: true
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Keep the placed-element model page-indexed and in PDF user-space units from
+    the start; stories 2-5 build on it. Render thumbnails lazily as they scroll
+    into view so long PDFs open quickly.
+- id: "2"
+  title: Insert, place, scale and remove signatures
+  description: >-
+    "PNG Unterschrift einfügen" adds any number of transparent PNG signatures
+    on any pages, draggable, with aspect-locked corner and free edge handles;
+    "Element entfernen" removes the selected element (CAP-2, CAP-3, CAP-6).
+  spec_checkpoint: true
+  done_checkpoint: false
+- id: "3"
+  title: Save as new PDF
+  description: >-
+    "Speichern" opens a save-as dialog and writes a new PDF with pdf-lib whose
+    placements match the preview on every page, including rotated pages and
+    offset CropBoxes, refusing the source path (CAP-5).
+  spec_checkpoint: true
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Embed each distinct PNG once and reference it for every placement.
+- id: "4"
+  title: Warn before invalidating existing digital signatures
+  description: >-
+    Before writing, detect signed signature fields in the source PDF and
+    show a warning offering "Abbrechen" or continuing (CAP-7).
+  spec_checkpoint: true
+  done_checkpoint: false
+- id: "5"
+  title: Place/date texts
+  description: >-
+    "Ort/Datum einfügen" adds any number of "<place>, <date>" texts with
+    today's date prefilled, placed and font-size-scaled like signatures,
+    removable, and saved with a bundled embedded Unicode font (CAP-4).
+  spec_checkpoint: true
+  done_checkpoint: false

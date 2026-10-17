@@ -147,8 +147,9 @@ export function createOverlay(
   removeButton.type = "button";
   removeButton.className = "frame-remove";
   removeButton.textContent = "×";
-  removeButton.title = "Element entfernen";
+  removeButton.title = "Element entfernen (Entf)";
   removeButton.setAttribute("aria-label", "Element entfernen");
+  removeButton.setAttribute("aria-keyshortcuts", "Delete Backspace");
   removeButton.addEventListener("pointerdown", (event) => {
     // Neither start a move on the frame nor deselect via the background.
     event.stopPropagation();

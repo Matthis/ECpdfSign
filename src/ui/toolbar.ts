@@ -2,15 +2,16 @@ export type ToolbarAction =
   | "open"
   | "insertPlaceDate"
   | "insertSignature"
-  | "removeElement"
   | "save";
 
-/** The five toolbar buttons, in display order. */
+/**
+ * The four toolbar buttons, in display order. There is no remove button:
+ * elements are removed via the "×" on their frame or with Entf/Backspace.
+ */
 export const TOOLBAR_BUTTONS: ReadonlyArray<{ action: ToolbarAction; label: string }> = [
   { action: "open", label: "PDF Öffnen" },
   { action: "insertPlaceDate", label: "Ort/Datum einfügen" },
   { action: "insertSignature", label: "PNG Unterschrift einfügen" },
-  { action: "removeElement", label: "Element entfernen" },
   { action: "save", label: "Speichern" },
 ];
 

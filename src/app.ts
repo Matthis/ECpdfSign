@@ -184,10 +184,6 @@ export function createApp(deps: AppDeps): App {
   function refreshToolbar(): void {
     deps.toolbar.setEnabled("insertSignature", editable() && !inserting);
     deps.toolbar.setEnabled(
-      "removeElement",
-      editable() && current!.state.selectedElementId !== null,
-    );
-    deps.toolbar.setEnabled(
       "save",
       editable() && !inserting && current!.state.elements.length > 0,
     );
@@ -454,7 +450,6 @@ export function createApp(deps: AppDeps): App {
     handleToolbarAction(action) {
       if (action === "open") void openPdf();
       else if (action === "insertSignature") void insertSignature();
-      else if (action === "removeElement") removeSelected();
       else if (action === "save") void save();
     },
     openPdf,

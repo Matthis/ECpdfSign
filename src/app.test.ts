@@ -169,12 +169,15 @@ describe("toolbar actions", () => {
 
   it("without a document the other actions do nothing", () => {
     const { app, deps } = setup();
-    for (const action of ["insertPlaceDate", "insertSignature", "removeElement", "save"] as const) {
+    for (const action of ["insertPlaceDate", "insertSignature", "save"] as const) {
       app.handleToolbarAction(action);
     }
     expect(deps.pickPdf).not.toHaveBeenCalled();
     expect(deps.pickSignaturePng).not.toHaveBeenCalled();
     expect(deps.confirmDiscard).not.toHaveBeenCalled();
+    // Removal is shortcut/"×"-only now; without a document it does nothing.
+    expect(app.handleShortcut("removeElement")).toBe(false);
+    expect(app.getDocument()).toBeNull();
   });
 });
 
@@ -368,15 +371,14 @@ async function withDocument(pages = 5) {
 }
 
 describe("signature toolbar state", () => {
-  it("enables 'PNG Unterschrift einfügen' with a document and 'Element entfernen' only with a selection", async () => {
+  it("keeps 'PNG Unterschrift einfügen' enabled with a document, with and without a selection", async () => {
     const { app, enabled, insert } = await withDocument();
     expect(enabled("insertSignature")).toBe(true);
-    expect(enabled("removeElement")).toBe(false);
 
     await insert(PNG);
-    expect(enabled("removeElement")).toBe(true);
+    expect(enabled("insertSignature")).toBe(true);
     app.selectElement(null);
-    expect(enabled("removeElement")).toBe(false);
+    expect(enabled("insertSignature")).toBe(true);
   });
 
   it("disables inserting while the PNG dialog is open", async () => {
@@ -479,15 +481,14 @@ describe("matrix: PNG dialog cancelled / not a PNG", () => {
 });
 
 describe("matrix: Select / deselect / remove", () => {
-  it("'Element entfernen' removes the selected signature from the model", async () => {
-    const { app, deps, insert, enabled } = await withDocument();
+  it("Entf removes the selected signature from the model, together with its unused image", async () => {
+    const { app, deps, insert } = await withDocument();
     await insert(PNG);
-    app.handleToolbarAction("removeElement");
+    expect(app.handleShortcut("removeElement")).toBe(true);
     const state = app.getDocument()!.state;
     expect(state.elements).toHaveLength(0);
     expect(state.selectedElementId).toBeNull();
     expect(state.images.size).toBe(0);
-    expect(enabled("removeElement")).toBe(false);
     expect(deps.overlay.sync).toHaveBeenLastCalledWith(state);
   });
 
@@ -567,7 +568,7 @@ describe("matrix: Page switch / Many", () => {
   });
 
   it("ignores selecting an element of another page (e.g. clicked before the new page rendered)", async () => {
-    const { app, insert, enabled } = await withDocument();
+    const { app, insert } = await withDocument();
     await insert(PNG);
     const state = app.getDocument()!.state;
     const onFirst = state.elements[0].id;
@@ -576,7 +577,6 @@ describe("matrix: Page switch / Many", () => {
     app.selectElement(onFirst);
 
     expect(state.selectedElementId).toBeNull();
-    expect(enabled("removeElement")).toBe(false);
     expect(app.handleShortcut("removeElement")).toBe(false);
     expect(state.elements).toHaveLength(1);
   });
@@ -633,11 +633,9 @@ describe("matrix: Open another PDF with elements placed", () => {
     await vi.waitFor(() => expect(deps.pickPdf).toHaveBeenCalledTimes(2));
 
     expect(enabled("insertSignature")).toBe(false);
-    expect(enabled("removeElement")).toBe(false);
     expect(app.handleShortcut("removeElement")).toBe(false);
     expect(app.handleShortcut("deselect")).toBe(false);
     app.removeElement(element.id);
-    app.handleToolbarAction("removeElement");
     await app.insertSignature();
     expect(deps.pickSignaturePng).not.toHaveBeenCalled();
     expect(state.elements).toEqual([element]);
@@ -647,7 +645,7 @@ describe("matrix: Open another PDF with elements placed", () => {
     await pending;
     expect(app.getDocument()!.state).toBe(state);
     expect(enabled("insertSignature")).toBe(true);
-    expect(enabled("removeElement")).toBe(true);
+    expect(app.handleShortcut("removeElement")).toBe(true);
   });
 
   it("ignores shortcuts while the question is open", async () => {
@@ -689,7 +687,7 @@ describe("save toolbar state", () => {
     await insert(PNG);
     expect(enabled("save")).toBe(true);
 
-    app.handleToolbarAction("removeElement");
+    app.handleShortcut("removeElement");
     expect(enabled("save")).toBe(false);
   });
 
@@ -768,6 +766,11 @@ describe("matrix: Save", () => {
     expect(deps.setBusy).toHaveBeenLastCalledWith(true);
     await app.save();
     await app.openPdf();
+    // The frame's "×" and Entf cannot remove the element being saved.
+    const state = app.getDocument()!.state;
+    app.removeElement(state.elements[0].id);
+    expect(app.handleShortcut("removeElement")).toBe(false);
+    expect(state.elements).toHaveLength(1);
     expect(deps.buildSignedPdf).toHaveBeenCalledTimes(1);
     expect(deps.pickPdf).toHaveBeenCalledTimes(1); // only the initial open
 
@@ -842,7 +845,7 @@ describe("'Gespeichert' notice", () => {
 
   it("disappears when an element is removed or inserted", async () => {
     const removed = await saved();
-    removed.app.handleToolbarAction("removeElement");
+    removed.app.handleShortcut("removeElement");
     expect(removed.deps.messages.hide).toHaveBeenCalledTimes(1);
 
     const inserted = await saved();

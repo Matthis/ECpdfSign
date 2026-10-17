@@ -17,20 +17,19 @@ function setup() {
 }
 
 describe("toolbar", () => {
-  it("shows exactly the five German buttons in order", () => {
+  it("shows exactly the four German buttons in order, without 'Element entfernen'", () => {
     const { buttons } = setup();
     expect(buttons.map((b) => b.textContent)).toEqual([
       "PDF Öffnen",
       "Ort/Datum einfügen",
       "PNG Unterschrift einfügen",
-      "Element entfernen",
       "Speichern",
     ]);
   });
 
   it("enables only 'PDF Öffnen' at start", () => {
     const { buttons } = setup();
-    expect(buttons.map((b) => b.disabled)).toEqual([false, true, true, true, true]);
+    expect(buttons.map((b) => b.disabled)).toEqual([false, true, true, true]);
   });
 
   it("setEnabled toggles the disabled state of one button", () => {

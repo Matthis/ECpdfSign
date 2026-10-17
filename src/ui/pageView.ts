@@ -16,6 +16,12 @@ export interface PageView {
   showPage(pageIndex: number): void;
   /** The page currently on screen and its viewport, once it has been drawn. */
   getShownPage(): ShownPage | null;
+  /**
+   * Calls `listener` whenever a page has been drawn with a (possibly new)
+   * viewport, and with `null` when nothing usable is shown any more (no
+   * document, or the page failed to render). Returns an unsubscribe function.
+   */
+  onViewportShown(listener: (shown: ShownPage | null) => void): () => void;
 }
 
 export function createPageView(
@@ -29,6 +35,22 @@ export function createPageView(
   let renderSeq = 0;
   let activeRender: PageRender | null = null;
   let renderedKey: string | null = null;
+  /**
+   * The canvas or error message this view put into the stage. Only this node
+   * is ever replaced, so other layers in the stage (the element overlay) survive.
+   */
+  let pageContent: HTMLElement | null = null;
+  const listeners = new Set<(shown: ShownPage | null) => void>();
+
+  function notify(): void {
+    for (const listener of listeners) listener(shown);
+  }
+
+  function setPageContent(node: HTMLElement | null): void {
+    if (pageContent !== node) pageContent?.remove();
+    pageContent = node;
+    if (node) stage.prepend(node);
+  }
 
   function available(): { width: number; height: number } {
     const styles = getComputedStyle(container);
@@ -43,7 +65,7 @@ export function createPageView(
     const message = document.createElement("p");
     message.className = "page-error";
     message.textContent = text;
-    stage.replaceChildren(message);
+    setPageContent(message);
     stage.style.width = "";
     stage.style.height = "";
   }
@@ -70,11 +92,12 @@ export function createPageView(
       if (seq !== renderSeq) return;
       activeRender = null;
       // Swap in the finished canvas so resizing never flashes an empty page.
-      stage.replaceChildren(job.canvas);
+      setPageContent(job.canvas);
       stage.style.width = `${viewport.width}px`;
       stage.style.height = `${viewport.height}px`;
       shown = { pageIndex: index, viewport };
       renderedKey = key;
+      notify();
     } catch (error) {
       if (seq !== renderSeq || isRenderCancelled(error)) return;
       activeRender = null;
@@ -82,6 +105,7 @@ export function createPageView(
       shown = null;
       renderedKey = key;
       showMessage(`Seite ${index + 1} konnte nicht dargestellt werden.`);
+      notify();
     }
   }
 
@@ -116,9 +140,10 @@ export function createPageView(
       pageIndex = newPageIndex;
       shown = null;
       renderedKey = null;
-      stage.replaceChildren();
+      setPageContent(null);
       stage.hidden = !newDoc;
       emptyHint.hidden = !!newDoc;
+      notify();
       if (newDoc) void render(true);
     },
     showPage(newPageIndex) {
@@ -128,6 +153,10 @@ export function createPageView(
     },
     getShownPage() {
       return shown && shown.pageIndex === pageIndex ? shown : null;
+    },
+    onViewportShown(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
     },
   };
 }

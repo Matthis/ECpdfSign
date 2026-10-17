@@ -1,5 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { decodeOpenPayload } from "./backend";
+import { describe, expect, it, vi } from "vitest";
+import {
+  decodeOpenPayload,
+  decodeSignaturePayload,
+  EMPTY_FILE_ERROR,
+  pickSignaturePng,
+} from "./backend";
+
+const invokeMock = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 
 // Mirrors encode_open_payload in src-tauri/src/lib.rs.
 function encode(name: string, pdf: Uint8Array): Uint8Array {
@@ -47,5 +55,37 @@ describe("decodeOpenPayload", () => {
   it("rejects malformed payloads", () => {
     expect(() => decodeOpenPayload(new Uint8Array([1, 0]))).toThrow();
     expect(() => decodeOpenPayload(new Uint8Array([200, 0, 0, 0, 65]))).toThrow();
+  });
+});
+
+describe("pickSignaturePng", () => {
+  it("returns null for the cancel payload", async () => {
+    invokeMock.mockResolvedValueOnce(new ArrayBuffer(0));
+    await expect(pickSignaturePng()).resolves.toBeNull();
+    expect(invokeMock).toHaveBeenLastCalledWith("pick_signature_png");
+  });
+
+  it("returns the file bytes", async () => {
+    invokeMock.mockResolvedValueOnce(new Uint8Array([0x89, 0x50, 0x4e, 0x47]).buffer);
+    await expect(pickSignaturePng()).resolves.toEqual(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
+  });
+
+  it("turns an empty file into zero bytes, not a cancel", async () => {
+    // The literal is the contract with lib.rs (EMPTY_FILE_ERROR there).
+    invokeMock.mockRejectedValueOnce("empty-file");
+    expect(EMPTY_FILE_ERROR).toBe("empty-file");
+    const result = await pickSignaturePng();
+    expect(result).not.toBeNull();
+    expect(result?.byteLength).toBe(0);
+  });
+
+  it("passes other backend errors on", async () => {
+    invokeMock.mockRejectedValueOnce("Access is denied. (os error 5)");
+    await expect(pickSignaturePng()).rejects.toBe("Access is denied. (os error 5)");
+  });
+
+  it("decodes the raw payload", () => {
+    expect(decodeSignaturePayload(new Uint8Array())).toBeNull();
+    expect(decodeSignaturePayload(new Uint8Array([1, 2]))).toEqual(new Uint8Array([1, 2]));
   });
 });

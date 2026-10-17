@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pick-signature-png"
+description = "Enables the pick_signature_png command without any pre-configured scope."
+commands.allow = ["pick_signature_png"]
+
+[[permission]]
+identifier = "deny-pick-signature-png"
+description = "Denies the pick_signature_png command without any pre-configured scope."
+commands.deny = ["pick_signature_png"]

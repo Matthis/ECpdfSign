@@ -31,7 +31,7 @@ export function createToolbar(
     button.className = "toolbar-button";
     button.textContent = label;
     button.dataset.action = action;
-    // Only opening is possible until later stories add the other features.
+    // Everything but opening needs a document; the app enables buttons as they become usable.
     button.disabled = action !== "open";
     button.addEventListener("click", () => onAction(action));
     buttons.set(action, button);

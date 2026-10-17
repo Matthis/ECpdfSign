@@ -24,11 +24,18 @@ A vision with a privacy pain behind it: people who need to put their handwritten
   - **intent:** User loads a signature saved as a PNG with transparency.
   - **success:** A PNG with an alpha channel shows the underlying page content through its transparent areas, both in the preview and in the saved PDF.
 - **CAP-3**
-  - **intent:** User places any number of signatures on any pages, and moves and scales each one with the mouse.
+  - **intent:** User places any number of signatures on any pages, and moves, scales and rotates each one with the mouse.
   - **success:**
-    - Dragging moves a signature, and the preview updates live.
-    - Corner handles scale it with a fixed aspect ratio.
-    - Edge handles change width or height alone.
+    - A signature moves only while it is grabbed with the left mouse button held down, and the preview updates live.
+    - An active signature shows a frame:
+      - its corner handles scale with a fixed aspect ratio;
+      - its edge handles change width or height alone;
+      - an "×" in its top-left corner removes the signature.
+    - A rotation handle above the frame rotates the signature freely around its center:
+      - the angle is shown while rotating;
+      - it snaps at 0°, 90°, 180° and 270°;
+      - Shift rotates in 15° steps;
+      - a double-click resets it to 0°.
     - Twenty signatures across several pages can coexist.
 - **CAP-4**
   - **intent:** User can optionally add any number of place/date texts in the format "<place>, <date>" (e.g. "München, 17.10.2026"). The date is DD.MM.YYYY, prefilled with today, and can be edited; the place is free text. Either part can be left out. Each text is placed like a signature: by default beside or below the selected signature, or centered on the current page if no signature is placed. Resizing changes the font size and never stretches the glyphs.
@@ -39,7 +46,7 @@ A vision with a privacy pain behind it: people who need to put their handwritten
 - **CAP-5**
   - **intent:** User saves the result as a new PDF; the original file stays unchanged.
   - **success:**
-    - Every signature and text appears in the saved PDF at the position and size shown in the preview, including on rotated pages and pages with a non-zero CropBox origin.
+    - Every signature and text appears in the saved PDF at the position, size and rotation shown in the preview, including on rotated pages and pages with a non-zero CropBox origin.
     - All other content and pages are unchanged.
     - The source file is byte-identical before and after.
 - **CAP-6**
@@ -88,3 +95,7 @@ A vision with a privacy pain behind it: people who need to put their handwritten
   - In Adobe Acrobat Reader and macOS Preview, the new file shows every element where it was placed, with the page visible through the PNG's transparent areas.
   - The original file is byte-identical.
   - No network traffic occurred.
+
+## Open Questions
+
+- Can place/date texts be rotated like signatures? Decide in story 5.

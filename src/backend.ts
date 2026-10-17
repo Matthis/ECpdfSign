@@ -33,3 +33,28 @@ export async function pickPdf(): Promise<OpenedPdf | null> {
 export async function acceptOpenedPdf(): Promise<void> {
   await invoke("accept_opened_pdf");
 }
+
+/** Error text `pick_signature_png` returns for an empty file (see EMPTY_FILE_ERROR in lib.rs). */
+export const EMPTY_FILE_ERROR = "empty-file";
+
+/**
+ * Shows the native PNG dialog and returns the picked file's bytes, or `null`
+ * if the user cancelled. An empty file comes back as zero bytes (not `null`),
+ * so the caller rejects it like any other file that is not a PNG.
+ */
+export async function pickSignaturePng(): Promise<Uint8Array | null> {
+  let payload: ArrayBuffer;
+  try {
+    payload = await invoke<ArrayBuffer>("pick_signature_png");
+  } catch (error) {
+    if (error === EMPTY_FILE_ERROR) return new Uint8Array();
+    throw error;
+  }
+  return decodeSignaturePayload(payload);
+}
+
+/** An empty payload means the dialog was cancelled; anything else is the file. */
+export function decodeSignaturePayload(payload: ArrayBuffer | Uint8Array): Uint8Array | null {
+  const data = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
+  return data.byteLength === 0 ? null : data;
+}

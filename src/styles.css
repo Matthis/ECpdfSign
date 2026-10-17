@@ -10,6 +10,7 @@
   --error-bg: #fdecea;
   --error-border: #f5c2bd;
   --error-text: #8a1c12;
+  --danger: #c5221f;
 
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 14px;
@@ -50,6 +51,9 @@ body[aria-busy="true"] {
   background: var(--toolbar-bg);
   border-bottom: 1px solid var(--border);
   flex: none;
+  /* Above page content that spills out of the page view (see "Stacking" below). */
+  position: relative;
+  z-index: 3;
 }
 
 .toolbar-button {
@@ -98,6 +102,8 @@ body[aria-busy="true"] {
   border-bottom: 1px solid var(--error-border);
   color: var(--error-text);
   flex: none;
+  position: relative;
+  z-index: 3;
 }
 
 .message[hidden] {
@@ -136,6 +142,8 @@ body[aria-busy="true"] {
   background: var(--strip-bg);
   border-right: 1px solid var(--border);
   --thumb-slot-height: 220px;
+  position: relative;
+  z-index: 3;
 }
 
 .thumb-list {
@@ -221,7 +229,13 @@ body[aria-busy="true"] {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  overflow: hidden;
+  /*
+   * Not clipped, so the selection frame of a signature that hangs over the page
+   * edge is not cut off at the padding. The toolbar, message bar and strip stay
+   * on top of that frame and of a stale, larger canvas during a window resize
+   * (see "Stacking").
+   */
+  overflow: visible;
 }
 
 .empty-hint {
@@ -246,9 +260,177 @@ body[aria-busy="true"] {
   display: block;
   background: #fff;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  position: relative;
+  z-index: 1;
 }
 
 .page-error {
   margin: 0;
   color: var(--error-text);
+}
+
+/*
+ * Stacking (no ancestor of the page stage creates a stacking context):
+ *   1  page canvas and the page-clipped signature images
+ *   2  selection frame, handles and angle badge (not clipped by the page)
+ *   3  toolbar, message bar and thumbnail strip, which stay clickable on top
+ */
+
+/* Placed signatures: clipped to the page, because only that part is saved. */
+
+.overlay-images {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.placed-signature {
+  position: absolute;
+  display: block;
+  max-width: none;
+  pointer-events: auto;
+  cursor: move;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* Selection frame: not clipped. */
+
+.overlay-frames {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.element-frame {
+  position: absolute;
+  pointer-events: auto;
+  cursor: move;
+  border: 1px solid var(--accent);
+  outline: 1px dashed rgba(255, 255, 255, 0.8);
+  outline-offset: -2px;
+  touch-action: none;
+}
+
+.element-frame[hidden],
+.rotation-badge[hidden] {
+  display: none;
+}
+
+.frame-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: #fff;
+  border: 1px solid var(--accent);
+  transform: translate(-50%, -50%);
+  touch-action: none;
+}
+
+.frame-handle[data-handle="nw"] { left: 0; top: 0; }
+.frame-handle[data-handle="n"] { left: 50%; top: 0; }
+.frame-handle[data-handle="ne"] { left: 100%; top: 0; }
+.frame-handle[data-handle="e"] { left: 100%; top: 50%; }
+.frame-handle[data-handle="se"] { left: 100%; top: 100%; }
+.frame-handle[data-handle="s"] { left: 50%; top: 100%; }
+.frame-handle[data-handle="sw"] { left: 0; top: 100%; }
+.frame-handle[data-handle="w"] { left: 0; top: 50%; }
+
+/* Joins the rotation handle to the top edge; top and height are set from ROTATE_HANDLE_OFFSET. */
+.frame-rotate-line {
+  position: absolute;
+  left: 50%;
+  width: 1px;
+  background: var(--accent);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.frame-rotate-handle {
+  position: absolute;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid var(--accent);
+  transform: translate(-50%, -50%);
+  cursor: grab;
+  touch-action: none;
+}
+
+.frame-rotate-handle:active {
+  cursor: grabbing;
+}
+
+/* "×" just outside the top-left corner, so it does not cover the corner handle. */
+.frame-remove {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 20px;
+  height: 20px;
+  margin: -26px 0 0 -26px;
+  padding: 0;
+  border: 1px solid var(--danger);
+  border-radius: 50%;
+  background: #fff;
+  color: var(--danger);
+  font: 600 15px/1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.frame-remove:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+.rotation-badge {
+  position: absolute;
+  transform: translateY(-100%);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(32, 33, 36, 0.88);
+  color: #fff;
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Discard question */
+
+.confirm-dialog {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px 24px;
+  color: var(--text);
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+
+.confirm-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.confirm-dialog-text {
+  margin: 0 0 16px;
+  font-size: 15px;
+}
+
+.confirm-dialog-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.toolbar-button.danger {
+  color: var(--danger);
+  border-color: var(--danger);
 }

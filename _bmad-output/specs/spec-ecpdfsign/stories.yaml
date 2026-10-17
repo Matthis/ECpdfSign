@@ -13,10 +13,11 @@
     the start; stories 2-5 build on it. Render thumbnails lazily as they scroll
     into view so long PDFs open quickly.
 - id: "2"
-  title: Insert, place, scale and remove signatures
+  title: Insert, place, scale, rotate and remove signatures
   description: >-
     "PNG Unterschrift einfügen" adds any number of transparent PNG signatures
-    on any pages, draggable, with aspect-locked corner and free edge handles;
+    on any pages; an active signature shows a frame with aspect-locked corner
+    and free edge handles, a rotation handle and an "×" to remove it, and
     "Element entfernen" removes the selected element (CAP-2, CAP-3, CAP-6).
   spec_checkpoint: true
   done_checkpoint: false
@@ -24,8 +25,9 @@
   title: Save as new PDF
   description: >-
     "Speichern" opens a save-as dialog and writes a new PDF with pdf-lib whose
-    placements match the preview on every page, including rotated pages and
-    offset CropBoxes, refusing the source path (CAP-5).
+    placements (position, size and rotation) match the preview on every page,
+    including rotated pages and offset CropBoxes, refusing the source path
+    (CAP-5).
   spec_checkpoint: true
   done_checkpoint: false
   invoke_dev_with: >-

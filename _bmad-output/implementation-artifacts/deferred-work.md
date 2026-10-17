@@ -13,3 +13,9 @@
 - source_spec: `_bmad-output/specs/spec-ecpdfsign/stories/1-toolbar-shell-pdf-open-and-page-preview.md`
   summary: CLAUDE.md says Vitest runs in the Node environment, but `src/ui/thumbnails.test.ts` uses happy-dom per file.
   evidence: The fix edits an agent-context file, so it is out of scope for an auto-patch.
+- source_spec: `_bmad-output/specs/spec-ecpdfsign/stories/2-insert-place-scale-rotate-and-remove-signatures.md`
+  summary: Make the `src/main.ts` wiring testable (e.g. a `wire()` function) and test that viewport notifications reach the overlay and that keydown triggers shortcuts.
+  evidence: Deleting `pageView.onViewportShown(...)` or the keydown listener in `main.ts` leaves every test green, yet no signature is drawn or Entf/Esc stop working.
+- source_spec: `_bmad-output/specs/spec-ecpdfsign/stories/2-insert-place-scale-rotate-and-remove-signatures.md`
+  summary: In story 3, verify that pdf-lib `embedPng` handles every PNG variant the structural check accepts (16-bit, indexed, greyscale+alpha, interlaced), or reject the variants it cannot embed (severity medium, unverified).
+  evidence: Only 8-bit RGBA non-interlaced fixtures are run through pdf-lib. Fixtures of each variant run through `embedPng` would settle it.

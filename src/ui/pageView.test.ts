@@ -9,6 +9,7 @@ interface FakeJob {
   done: Promise<void>;
   cancel: ReturnType<typeof vi.fn>;
   finish(): void;
+  fail(error: unknown): void;
 }
 
 /** Every render started by the view, in order; the test decides when each one finishes. */
@@ -18,8 +19,12 @@ vi.mock("../pdf/render", () => ({
   fitViewport: vi.fn(() => ({ width: 300, height: 400 })),
   renderPage: vi.fn(() => {
     let finish!: () => void;
-    const done = new Promise<void>((resolve) => (finish = resolve));
-    const job = { canvas: document.createElement("canvas"), done, cancel: vi.fn(), finish };
+    let fail!: (error: unknown) => void;
+    const done = new Promise<void>((resolve, reject) => {
+      finish = resolve;
+      fail = reject;
+    });
+    const job = { canvas: document.createElement("canvas"), done, cancel: vi.fn(), finish, fail };
     jobs.push(job);
     return job;
   }),
@@ -127,5 +132,75 @@ describe("page view", () => {
     expect(stage.firstElementChild).toBe(newer.canvas);
     expect(stage.contains(older.canvas)).toBe(false);
     expect(view.getShownPage()?.pageIndex).toBe(2);
+  });
+
+  it("notifies listeners of each shown viewport and of nothing shown", async () => {
+    const { view } = setup();
+    const listener = vi.fn();
+    const unsubscribe = view.onViewportShown(listener);
+
+    view.setDocument(fakeDoc(3), 0);
+    expect(listener).toHaveBeenLastCalledWith(null);
+    await rendersStarted(1);
+    jobs[0].finish();
+    await vi.waitFor(() =>
+      expect(listener).toHaveBeenLastCalledWith({ pageIndex: 0, viewport: { width: 300, height: 400 } }),
+    );
+
+    view.showPage(2);
+    await rendersStarted(2);
+    jobs[1].finish();
+    await vi.waitFor(() => expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({ pageIndex: 2 })));
+
+    view.setDocument(null, 0);
+    expect(listener).toHaveBeenLastCalledWith(null);
+
+    unsubscribe();
+    listener.mockClear();
+    view.setDocument(fakeDoc(1), 0);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("keeps other layers in the stage when it swaps the page canvas", async () => {
+    const { view, stage } = setup();
+    const overlay = document.createElement("div");
+    stage.append(overlay);
+
+    view.setDocument(fakeDoc(3), 0);
+    await rendersStarted(1);
+    jobs[0].finish();
+    await vi.waitFor(() => expect(stage.firstElementChild).toBe(jobs[0].canvas));
+    view.showPage(1);
+    await rendersStarted(2);
+    jobs[1].finish();
+    await vi.waitFor(() => expect(stage.firstElementChild).toBe(jobs[1].canvas));
+
+    expect(Array.from(stage.children)).toEqual([jobs[1].canvas, overlay]);
+    view.setDocument(null, 0);
+    expect(Array.from(stage.children)).toEqual([overlay]);
+  });
+
+  it("reports nothing shown when a render fails, keeping other stage layers", async () => {
+    const { view, stage } = setup();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const overlay = document.createElement("div");
+    stage.append(overlay);
+    const listener = vi.fn();
+    view.onViewportShown(listener);
+
+    view.setDocument(fakeDoc(3), 0);
+    await rendersStarted(1);
+    jobs[0].finish();
+    await vi.waitFor(() => expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({ pageIndex: 0 })));
+
+    view.showPage(1);
+    await rendersStarted(2);
+    jobs[1].fail(new Error("broken page"));
+    await vi.waitFor(() => expect(listener).toHaveBeenLastCalledWith(null));
+
+    const error = stage.querySelector(".page-error");
+    expect(error?.textContent).toBe("Seite 2 konnte nicht dargestellt werden.");
+    expect(Array.from(stage.children)).toEqual([error, overlay]);
+    expect(view.getShownPage()).toBeNull();
   });
 });

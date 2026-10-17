@@ -89,6 +89,53 @@ async fn open_pdf(window: WebviewWindow, state: State<'_, AppState>) -> Result<R
     Ok(Response::new(encode_open_payload(&file_name, &bytes)))
 }
 
+/// Error text returned by `pick_signature_png` when the picked file is empty.
+/// An empty payload already means "cancelled", so an empty file needs its own
+/// signal; the frontend treats it like any other file that is not a PNG.
+/// Mirrored as `EMPTY_FILE_ERROR` in `src/backend.ts`; change both together.
+const EMPTY_FILE_ERROR: &str = "empty-file";
+
+/// Maps the outcome of the PNG dialog to the command's payload: no file (the
+/// dialog was cancelled) is an empty payload, a file is its raw bytes.
+fn signature_payload(picked: Option<Vec<u8>>) -> Result<Vec<u8>, String> {
+    match picked {
+        None => Ok(Vec::new()),
+        Some(bytes) if bytes.is_empty() => Err(EMPTY_FILE_ERROR.to_string()),
+        Some(bytes) => Ok(bytes),
+    }
+}
+
+/// Shows the native "open PNG" dialog and returns the picked file's bytes. An
+/// empty payload means the dialog was cancelled. Nothing is remembered: the
+/// path never leaves this function.
+///
+/// `async` for the same reason as [`open_pdf`].
+#[tauri::command]
+async fn pick_signature_png(window: WebviewWindow) -> Result<Response, String> {
+    let picked = window
+        .dialog()
+        .file()
+        .set_title("PNG-Unterschrift einfügen")
+        .add_filter("PNG-Bild", &["png"])
+        .set_parent(&window)
+        .blocking_pick_file();
+
+    let bytes = match picked {
+        None => None,
+        Some(picked) => {
+            let path = picked
+                .into_path()
+                .map_err(|_| "Der gewählte Speicherort wird nicht unterstützt.".to_string())?;
+            let read = tauri::async_runtime::spawn_blocking(move || std::fs::read(path))
+                .await
+                .map_err(|e| format!("Die Datei konnte nicht gelesen werden ({e})."))?
+                .map_err(|e| format!("Die Datei konnte nicht gelesen werden ({e})."))?;
+            Some(read)
+        }
+    };
+    Ok(Response::new(signature_payload(bytes)?))
+}
+
 /// Called by the frontend once the bytes from the last `open_pdf` loaded as a
 /// supported PDF; that file becomes the current source document.
 #[tauri::command]
@@ -101,7 +148,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![open_pdf, accept_opened_pdf])
+        .invoke_handler(tauri::generate_handler![
+            open_pdf,
+            accept_opened_pdf,
+            pick_signature_png
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -136,6 +187,68 @@ mod tests {
         // An empty payload means "cancelled", so a 0-byte file must still
         // produce a non-empty payload.
         assert!(!encode_open_payload("leer.pdf", b"").is_empty());
+    }
+
+    #[test]
+    fn signature_cancel_is_empty_payload() {
+        assert_eq!(signature_payload(None), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn signature_payload_is_the_file_bytes() {
+        let png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        assert_eq!(signature_payload(Some(png.clone())), Ok(png));
+    }
+
+    #[test]
+    fn empty_file_error_matches_frontend_literal() {
+        // `src/backend.ts` matches this exact string; change both together.
+        assert_eq!(EMPTY_FILE_ERROR, "empty-file");
+    }
+
+    /// Command names listed in build.rs' `AppManifest::commands(&[...])`.
+    fn manifest_commands(build_rs: &str) -> Vec<String> {
+        let start = build_rs
+            .find(".commands(&[")
+            .expect("build.rs declares the app commands")
+            + ".commands(&[".len();
+        let end = start + build_rs[start..].find(']').expect("command list is closed");
+        build_rs[start..end]
+            .split(',')
+            .map(|item| item.trim().trim_matches('"').to_string())
+            .filter(|name| !name.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn every_manifest_command_is_granted_to_the_main_window() {
+        let commands = manifest_commands(include_str!("../build.rs"));
+        assert!(commands.contains(&"pick_signature_png".to_string()));
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json"))
+                .expect("default.json is valid JSON");
+        let granted: Vec<&str> = capability["permissions"]
+            .as_array()
+            .expect("permissions array")
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        for command in commands {
+            let permission = format!("allow-{}", command.replace('_', "-"));
+            assert!(
+                granted.contains(&permission.as_str()),
+                "{permission} missing from capabilities/default.json"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_signature_file_is_not_a_cancel() {
+        // Must not collapse into the empty "cancelled" payload.
+        assert_eq!(
+            signature_payload(Some(Vec::new())),
+            Err(EMPTY_FILE_ERROR.to_string())
+        );
     }
 
     #[test]

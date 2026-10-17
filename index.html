@@ -1,43 +1,30 @@
 <!doctype html>
-<html lang="en">
+<html lang="de">
   <head>
     <meta charset="UTF-8" />
-    <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri App</title>
-    <script type="module" src="/src/main.ts" defer></script>
+    <title>ECpdfSign</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <script type="module" src="/src/main.ts"></script>
   </head>
 
   <body>
-    <main class="container">
-      <h1>Welcome to Tauri</h1>
+    <header class="toolbar" id="toolbar" role="toolbar" aria-label="Werkzeugleiste"></header>
 
-      <div class="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/src/assets/vite.svg" class="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img
-            src="/src/assets/tauri.svg"
-            class="logo tauri"
-            alt="Tauri logo"
-          />
-        </a>
-        <a href="https://www.typescriptlang.org/docs" target="_blank">
-          <img
-            src="/src/assets/typescript.svg"
-            class="logo typescript"
-            alt="typescript logo"
-          />
-        </a>
-      </div>
-      <p>Click on the Tauri logo to learn more about the framework</p>
+    <div class="message" id="message" role="alert" hidden>
+      <span class="message-text" id="message-text"></span>
+      <button type="button" class="message-close" id="message-close" aria-label="Meldung schließen">×</button>
+    </div>
 
-      <form class="row" id="greet-form">
-        <input id="greet-input" placeholder="Enter a name..." />
-        <button type="submit">Greet</button>
-      </form>
-      <p id="greet-msg"></p>
+    <main class="workspace">
+      <nav class="thumbnails" id="thumbnails" aria-label="Seitenübersicht"></nav>
+      <section class="page-view" id="page-view" aria-label="Ausgewählte Seite">
+        <p class="empty-hint" id="empty-hint">
+          Noch kein Dokument geöffnet.<br />
+          Klicken Sie auf „PDF Öffnen“, um eine PDF-Datei auszuwählen.
+        </p>
+        <div class="page-stage" id="page-stage" hidden></div>
+      </section>
     </main>
   </body>
 </html>

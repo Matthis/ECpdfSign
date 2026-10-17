@@ -11,10 +11,14 @@ import {
   keepOnPage,
   MIN_SIZE,
   moveBox,
+  pdfUnitInPx,
+  placeDatePlacement,
   pointerAngle,
   resizeBox,
+  resizeFromTopLeft,
   rotateBox,
   rotatedBounds,
+  scaleTextBox,
   snapRotation,
   type Box,
   type Point,
@@ -200,6 +204,98 @@ describe("default placement", () => {
 
 // Real pdf.js viewports: page 1 plain, page 2 /Rotate 90 with a CropBox offset,
 // page 3 /Rotate 270 with the same CropBox.
+describe("text scaling", () => {
+  const TEXT: Box = { cx: 200, cy: 150, width: 120, height: 15, rotation: 0 };
+
+  it("scales the font size with the box, keeping the aspect ratio and the opposite corner", () => {
+    const { box, fontSize } = scaleTextBox(TEXT, "se", 60, 0, 11);
+    expect(box.width / box.height).toBeCloseTo(8, 9);
+    expect(fontSize).toBeCloseTo((11 * box.height) / TEXT.height, 9);
+    expect(fontSize).toBeGreaterThan(11);
+    expectPoint(boxPoint(box, -box.width / 2, -box.height / 2), { x: 140, y: 142.5 });
+  });
+
+  for (const rotation of [30, 90, 247.5]) {
+    it(`keeps the corner opposite the dragged handle at ${rotation}°`, () => {
+      const start = { ...TEXT, rotation };
+      const fixed = boxPoint(start, start.width / 2, -start.height / 2); // ne, opposite sw
+      const { box } = scaleTextBox(start, "sw", -30, 20, 11);
+      expectPoint(boxPoint(box, box.width / 2, -box.height / 2), fixed);
+      expect(box.width / box.height).toBeCloseTo(8, 9);
+    });
+  }
+
+  it("never goes below 6 pt", () => {
+    const { box, fontSize } = scaleTextBox(TEXT, "se", -500, -500, 11);
+    expect(fontSize).toBeCloseTo(6, 9);
+    expect(box.height).toBeCloseTo((TEXT.height * 6) / 11, 9);
+  });
+
+  it("does not grow a text that is already below 6 pt when shrinking", () => {
+    const { fontSize } = scaleTextBox(TEXT, "nw", 50, 50, 5);
+    expect(fontSize).toBeCloseTo(5, 9);
+  });
+});
+
+describe("text resize from the top-left", () => {
+  for (const rotation of [0, 30, 180]) {
+    it(`keeps the top-left corner at ${rotation}°`, () => {
+      const box: Box = { cx: 100, cy: 80, width: 60, height: 14, rotation };
+      const out = resizeFromTopLeft(box, 90, 14);
+      expect(out.width).toBe(90);
+      expect(out.rotation).toBe(rotation);
+      expectPoint(boxPoint(out, -45, -7), boxPoint(box, -30, -7));
+    });
+  }
+});
+
+describe("place/date placement", () => {
+  const PAGE = { width: 600, height: 800 };
+  const TEXT = { width: 120, height: 15 };
+
+  it("centers the text on the page without a signature", () => {
+    expect(placeDatePlacement(PAGE, TEXT, null)).toEqual({
+      cx: 300,
+      cy: 400,
+      width: 120,
+      height: 15,
+      rotation: 0,
+    });
+  });
+
+  it("goes below the signature, left-aligned, with a small gap", () => {
+    const sig: Box = { cx: 200, cy: 300, width: 160, height: 50, rotation: 0 };
+    const out = placeDatePlacement(PAGE, TEXT, sig);
+    expect(out.cx - out.width / 2).toBeCloseTo(120, 9);
+    const top = out.cy - out.height / 2;
+    expect(top).toBeGreaterThan(325);
+    expect(top).toBeLessThan(335);
+    expect(out.rotation).toBe(0);
+  });
+
+  it("uses the bounding box of a rotated signature", () => {
+    const sig: Box = { cx: 200, cy: 300, width: 160, height: 50, rotation: 90 };
+    const out = placeDatePlacement(PAGE, TEXT, sig);
+    expect(out.cx - out.width / 2).toBeCloseTo(175, 9);
+    expect(out.cy - out.height / 2).toBeGreaterThan(380);
+  });
+
+  it("goes to the right, vertically centered, when there is no room below", () => {
+    const sig: Box = { cx: 200, cy: 780, width: 160, height: 40, rotation: 0 };
+    const out = placeDatePlacement(PAGE, TEXT, sig);
+    expect(out.cx - out.width / 2).toBeGreaterThan(280);
+    expect(out.cx - out.width / 2).toBeLessThan(290);
+    expect(out.cy).toBeCloseTo(780, 9);
+  });
+
+  it("stays on the page when the signature hangs over an edge", () => {
+    const sig: Box = { cx: 560, cy: 795, width: 160, height: 40, rotation: 0 };
+    const out = placeDatePlacement(PAGE, TEXT, sig);
+    expect(out.cx + out.width / 2).toBeLessThanOrEqual(600);
+    expect(out.cy + out.height / 2).toBeLessThanOrEqual(800);
+  });
+});
+
 describe("PDF round trip", () => {
   let destroy: (() => Promise<void>) | undefined;
   const pages: PDFPageProxy[] = [];
@@ -260,6 +356,12 @@ describe("PDF round trip", () => {
       });
     });
   }
+
+  it("measures the zoom in px per PDF unit on plain and rotated pages", () => {
+    expect(pdfUnitInPx(vp(0, 1.3))).toBeCloseTo(1.3, 9);
+    expect(pdfUnitInPx(vp(1, 0.75))).toBeCloseTo(0.75, 9);
+    expect(pdfUnitInPx(vp(2, 2))).toBeCloseTo(2, 9);
+  });
 
   it("stores the upright screen box with width along PDF y on a 90° page", () => {
     const viewport = vp(1, 1);

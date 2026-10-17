@@ -1,3 +1,20 @@
+/*
+ * The place/date font: the same file the saved PDF embeds (placeDate/font.ts).
+ * The overrides pin the line box to Noto Sans' ascender/descender (1069/-293
+ * per 1000 units, see placeDate/metrics.ts), so the baseline sits exactly
+ * where the PDF draws it.
+ */
+@font-face {
+  font-family: "ECpdfSign Text";
+  src: url("./assets/fonts/NotoSans-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+  ascent-override: 106.9%;
+  descent-override: 29.3%;
+  line-gap-override: 0%;
+}
+
 :root {
   --toolbar-bg: #f6f6f6;
   --border: #d0d0d0;
@@ -306,6 +323,35 @@ body[aria-busy="true"] {
   -webkit-user-drag: none;
 }
 
+/*
+ * Placed place/date texts, in the page-clipped layer. Laid out like the PDF
+ * draws them: plain advances (no kerning, no ligatures), one line, black.
+ */
+.placed-text {
+  position: absolute;
+  display: block;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  white-space: pre;
+  color: #000;
+  font-family: "ECpdfSign Text";
+  font-weight: 400;
+  font-style: normal;
+  font-synthesis: none;
+  font-kerning: none;
+  font-variant-ligatures: none;
+  font-feature-settings: "kern" 0, "liga" 0, "clig" 0, "calt" 0;
+  letter-spacing: 0;
+  word-spacing: 0;
+  text-rendering: geometricPrecision;
+  transform-origin: 50% 50%;
+  pointer-events: auto;
+  cursor: move;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 /* Selection frame: not clipped. */
 
 .overlay-frames {
@@ -326,8 +372,50 @@ body[aria-busy="true"] {
 }
 
 .element-frame[hidden],
-.rotation-badge[hidden] {
+.rotation-badge[hidden],
+.frame-handle[hidden],
+.place-date-editor[hidden] {
   display: none;
+}
+
+/* Inline place/date editor: in the text's place, font size and rotation (set from code). */
+.place-date-editor {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  white-space: pre;
+  transform-origin: 0 0;
+  pointer-events: auto;
+  color: #000;
+  font-family: "ECpdfSign Text";
+  font-kerning: none;
+  font-variant-ligatures: none;
+  background: rgba(255, 255, 255, 0.9);
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.place-date-editor input {
+  font: inherit;
+  line-height: inherit;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-bottom: 1px dashed var(--accent);
+  background: transparent;
+  color: inherit;
+  min-width: 0;
+}
+
+.place-date-editor input:focus {
+  outline: none;
+  background: rgba(26, 115, 232, 0.08);
+}
+
+.place-date-place::placeholder {
+  color: #9a9a9a;
 }
 
 .frame-handle {

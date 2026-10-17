@@ -40,9 +40,19 @@ export interface SignatureElement extends PlacedElementBase {
   imageId: string;
 }
 
-/** Place/date text (story 5); declared so the union is already in place. */
+/**
+ * A "<place>, <date>" text line. Its `rect` is the text box at `fontSize`
+ * (advance width by ascender minus descender of the bundled font, see
+ * placeDate/metrics.ts); it is derived from the text, never typed in.
+ */
 export interface PlaceDateElement extends PlacedElementBase {
   kind: "placeDate";
+  /** Free text; may be empty. */
+  place: string;
+  /** DD.MM.YYYY, or empty. */
+  date: string;
+  /** Font size in PDF points. */
+  fontSize: number;
 }
 
 export type PlacedElement = SignatureElement | PlaceDateElement;
@@ -68,6 +78,8 @@ export interface DocumentState {
   elements: PlacedElement[];
   /** Id of the selected element, or `null`. */
   selectedElementId: string | null;
+  /** Id of the place/date text whose inline editor is open, or `null`. */
+  editingElementId: string | null;
   images: Map<string, StoredImage>;
   /** Counter behind element and image ids; ids are never reused within a document. */
   nextId: number;
@@ -99,6 +111,7 @@ export function createDocumentState(
     selectedPageIndex: 0,
     elements: [],
     selectedElementId: null,
+    editingElementId: null,
     images: new Map(),
     nextId: 1,
     signedSignatureCount,
@@ -166,21 +179,70 @@ export function addSignature(state: DocumentState, init: NewSignature): Signatur
   return element;
 }
 
+export interface NewPlaceDate {
+  pageIndex: number;
+  rect: PdfRect;
+  rotation: number;
+  place: string;
+  date: string;
+  fontSize: number;
+}
+
+/** Adds a place/date text on top of the others and returns it. */
+export function addPlaceDate(state: DocumentState, init: NewPlaceDate): PlaceDateElement {
+  const element: PlaceDateElement = {
+    id: `el-${state.nextId++}`,
+    kind: "placeDate",
+    pageIndex: clampPageIndex(state, init.pageIndex),
+    rect: { ...init.rect },
+    rotation: normalizeRotation(init.rotation),
+    place: init.place,
+    date: init.date,
+    fontSize: init.fontSize,
+  };
+  state.elements.push(element);
+  return element;
+}
+
+/**
+ * Sets the text of a place/date element together with its new box (the box
+ * follows from the text). Returns `false` if there is no such text element.
+ */
+export function updatePlaceDateText(
+  state: DocumentState,
+  id: string,
+  place: string,
+  date: string,
+  rect: PdfRect,
+): boolean {
+  const element = getElement(state, id);
+  if (!element || element.kind !== "placeDate") return false;
+  element.place = place;
+  element.date = date;
+  element.rect = { ...rect };
+  return true;
+}
+
 export function getElement(state: DocumentState, id: string): PlacedElement | undefined {
   return state.elements.find((element) => element.id === id);
 }
 
-/** Updates the geometry of an element. Returns `false` if it does not exist. */
+/**
+ * Updates the geometry of an element. `fontSize` (scaling a text) only
+ * applies to place/date texts. Returns `false` if the element does not exist.
+ */
 export function updateElementGeometry(
   state: DocumentState,
   id: string,
   rect: PdfRect,
   rotation: number,
+  fontSize?: number,
 ): boolean {
   const element = getElement(state, id);
   if (!element) return false;
   element.rect = { ...rect };
   element.rotation = normalizeRotation(rotation);
+  if (fontSize !== undefined && element.kind === "placeDate") element.fontSize = fontSize;
   return true;
 }
 
@@ -193,6 +255,7 @@ export function removeElement(state: DocumentState, id: string): boolean {
   if (index < 0) return false;
   const [removed] = state.elements.splice(index, 1);
   if (state.selectedElementId === id) state.selectedElementId = null;
+  if (state.editingElementId === id) state.editingElementId = null;
   if (
     removed.kind === "signature" &&
     !state.elements.some((e) => e.kind === "signature" && e.imageId === removed.imageId)

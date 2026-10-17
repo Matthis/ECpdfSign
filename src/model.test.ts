@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addImage,
+  addPlaceDate,
   addSignature,
   clampPageIndex,
   createDocumentState,
@@ -10,6 +11,7 @@ import {
   removeElement,
   selectElement,
   updateElementGeometry,
+  updatePlaceDateText,
 } from "./model";
 
 describe("document state", () => {
@@ -18,6 +20,7 @@ describe("document state", () => {
     expect(state.selectedPageIndex).toBe(0);
     expect(state.elements).toEqual([]);
     expect(state.selectedElementId).toBeNull();
+    expect(state.editingElementId).toBeNull();
     expect(state.images.size).toBe(0);
     expect(state.pageCount).toBe(10);
     expect(state.signedSignatureCount).toBe(0);
@@ -142,6 +145,55 @@ describe("elements", () => {
     selectElement(state, a.id);
     removeElement(state, b.id);
     expect(state.selectedElementId).toBe(a.id);
+  });
+});
+
+describe("place/date texts", () => {
+  const TEXT = { pageIndex: 1, rect: RECT, rotation: 0, place: "", date: "17.10.2026", fontSize: 11 };
+
+  it("adds a text with place, date, font size and rotation", () => {
+    const state = createDocumentState("a.pdf", new Uint8Array(), 3);
+    const a = addPlaceDate(state, { ...TEXT, rotation: -30 });
+    expect(a).toMatchObject({ kind: "placeDate", pageIndex: 1, place: "", date: "17.10.2026", fontSize: 11 });
+    expect(a.rotation).toBe(330);
+    expect(a.rect).toEqual(RECT);
+    expect(a.rect).not.toBe(RECT);
+    expect(state.elements).toEqual([a]);
+  });
+
+  it("updates the text together with its box, for texts only", () => {
+    const { state, imageId } = withImage();
+    const a = addPlaceDate(state, TEXT);
+    const sig = addSignature(state, { pageIndex: 0, rect: RECT, rotation: 0, imageId });
+    const rect = { x: 5, y: 6, width: 70, height: 15 };
+    expect(updatePlaceDateText(state, a.id, "München", "01.11.2026", rect)).toBe(true);
+    expect(a).toMatchObject({ place: "München", date: "01.11.2026", rect });
+    expect(updatePlaceDateText(state, sig.id, "x", "y", rect)).toBe(false);
+    expect(updatePlaceDateText(state, "nope", "x", "y", rect)).toBe(false);
+  });
+
+  it("changes the font size with the geometry, but never a signature's", () => {
+    const { state, imageId } = withImage();
+    const a = addPlaceDate(state, TEXT);
+    const sig = addSignature(state, { pageIndex: 0, rect: RECT, rotation: 0, imageId });
+    const rect = { x: 1, y: 2, width: 30, height: 8 };
+    expect(updateElementGeometry(state, a.id, rect, 15, 22)).toBe(true);
+    expect(a).toMatchObject({ rect, rotation: 15, fontSize: 22 });
+    updateElementGeometry(state, a.id, rect, 20);
+    expect(a.fontSize).toBe(22);
+    updateElementGeometry(state, sig.id, rect, 0, 40);
+    expect(sig).not.toHaveProperty("fontSize");
+  });
+
+  it("ends editing when the edited text is removed", () => {
+    const state = createDocumentState("a.pdf", new Uint8Array(), 3);
+    const a = addPlaceDate(state, TEXT);
+    const b = addPlaceDate(state, TEXT);
+    state.editingElementId = a.id;
+    removeElement(state, b.id);
+    expect(state.editingElementId).toBe(a.id);
+    removeElement(state, a.id);
+    expect(state.editingElementId).toBeNull();
   });
 });
 

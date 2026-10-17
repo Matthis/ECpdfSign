@@ -28,3 +28,6 @@
 - source_spec: `_bmad-output/specs/spec-ecpdfsign/stories/4-warn-before-invalidating-existing-digital-signatures.md`
   summary: Test that `main.ts` wires `confirmInvalidateSignatures` to `#signatures-dialog` with `signatureWarning(count)` (e.g. via an extracted `wireDialogs` helper).
   evidence: `confirmInvalidateSignatures: () => discardDialog.ask()` type-checks and every test stays green, yet the warning would ask "Platzierte Elemente verwerfen?".
+- source_spec: `_bmad-output/specs/spec-ecpdfsign/stories/6-place-date-texts.md`
+  summary: Verify that pdf-lib/`@pdf-lib/fontkit` subsetting embeds correct outlines for Noto Sans composite glyphs (accents such as Ł, ó, ź, ø, ü) in the saved PDF (severity medium, unverified).
+  evidence: Save tests check corners and `getTextContent` strings (ToUnicode) only. Settle by opening a saved "Łódź, Ærøskøbing, Zürich" PDF in Acrobat and Edge, or by comparing the embedded subset's glyph outlines with the source font.

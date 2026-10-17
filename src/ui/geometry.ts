@@ -5,7 +5,8 @@
 // `boxFromGeometry`, which go through pdf/viewport.ts.
 
 import { normalizeRotation, type PdfRect } from "../model";
-import { toPdfRect, toViewportRect, type PageViewport } from "../pdf/viewport";
+import { toPdfRect, toViewportPoint, toViewportRect, type PageViewport } from "../pdf/viewport";
+import { MIN_FONT_SIZE } from "../placeDate/metrics";
 
 export interface Box {
   cx: number;
@@ -209,10 +210,14 @@ export function defaultPlacement(page: Size, imageWidth: number, imageHeight: nu
   return { cx: page.width / 2, cy: page.height / 2, width, height, rotation: 0 };
 }
 
-/** What the model stores for a box: its unrotated rectangle in PDF user space plus the rotation. */
+/**
+ * What the model stores for a box: its unrotated rectangle in PDF user space
+ * plus the rotation, and for a scaled place/date text its new font size.
+ */
 export interface ElementGeometry {
   rect: PdfRect;
   rotation: number;
+  fontSize?: number;
 }
 
 export function boxToGeometry(viewport: PageViewport, box: Box): ElementGeometry {
@@ -235,5 +240,84 @@ export function boxFromGeometry(viewport: PageViewport, geometry: ElementGeometr
     width: r.width,
     height: r.height,
     rotation: geometry.rotation,
+  };
+}
+
+/** Viewport px per PDF user-space unit (the page's zoom, whatever its /Rotate). */
+export function pdfUnitInPx(viewport: PageViewport): number {
+  const a = toViewportPoint(viewport, { x: 0, y: 0 });
+  const b = toViewportPoint(viewport, { x: 1, y: 0 });
+  return Math.hypot(b.x - a.x, b.y - a.y);
+}
+
+/**
+ * Scales a place/date text by dragging a corner handle by (dx, dy) screen px.
+ * Like a corner resize (aspect ratio kept, the opposite corner stays where it
+ * is), but the limit is the font size: it never drops below `minFontSize`
+ * (a text that is already smaller cannot get smaller still). Returns the new
+ * box and font size.
+ */
+export function scaleTextBox(
+  start: Box,
+  corner: Corner,
+  dx: number,
+  dy: number,
+  startFontSize: number,
+  minFontSize = MIN_FONT_SIZE,
+): { box: Box; fontSize: number } {
+  const short = Math.min(start.width, start.height);
+  // resizeBox stops at minScale = minSize / short; make that minFontSize / startFontSize.
+  const box = resizeBox(start, corner, dx, dy, (short * minFontSize) / startFontSize);
+  const ratio = start.height > 0 ? box.height / start.height : 1;
+  return { box, fontSize: startFontSize * ratio };
+}
+
+/**
+ * Gives `box` a new size while its own top-left corner (on screen, rotation
+ * included) stays put; used when the text of a place/date element changes.
+ */
+export function resizeFromTopLeft(box: Box, width: number, height: number): Box {
+  const nw = boxPoint(box, -box.width / 2, -box.height / 2);
+  const d = rotateVector(width / 2, height / 2, box.rotation);
+  return { ...box, width, height, cx: nw.x + d.x, cy: nw.y + d.y };
+}
+
+/** Gap between a signature and a new place/date text, as a share of the text's height. */
+export const PLACE_DATE_GAP_SHARE = 0.25;
+
+/**
+ * Where a new place/date text of `size` (viewport px) goes, upright:
+ * - below `signature` (its rotated bounding box), left-aligned with it, with a
+ *   small gap;
+ * - if it does not fit below on the page, to its right, vertically centered;
+ * - without a signature, centered on the page.
+ * The result is shifted onto the page as far as it fits.
+ */
+export function placeDatePlacement(page: Size, size: Size, signature: Box | null): Box {
+  let left: number;
+  let top: number;
+  if (!signature) {
+    left = (page.width - size.width) / 2;
+    top = (page.height - size.height) / 2;
+  } else {
+    const b = rotatedBounds(signature);
+    const gap = size.height * PLACE_DATE_GAP_SHARE;
+    if (b.bottom + gap + size.height <= page.height) {
+      left = b.left;
+      top = b.bottom + gap;
+    } else {
+      left = b.right + gap;
+      top = (b.top + b.bottom) / 2 - size.height / 2;
+    }
+    const clamp = (value: number, max: number) => Math.max(0, Math.min(value, max));
+    left = clamp(left, page.width - size.width);
+    top = clamp(top, page.height - size.height);
+  }
+  return {
+    cx: left + size.width / 2,
+    cy: top + size.height / 2,
+    width: size.width,
+    height: size.height,
+    rotation: 0,
   };
 }

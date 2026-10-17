@@ -1,14 +1,19 @@
-// Placed signatures on top of the shown page, plus the selection frame with its
-// handles. Two layers live in the page stage:
-// - the image layer is clipped to the page, because only that part is saved;
-// - the frame layer is not clipped, so the frame, handles, "×" and the angle
-//   badge stay reachable while a signature hangs over the page edge.
+// Placed signatures and place/date texts on top of the shown page, plus the
+// selection frame with its handles and the inline text editor. Two layers live
+// in the page stage:
+// - the element layer is clipped to the page, because only that part is saved;
+// - the frame layer is not clipped, so the frame, handles, "×", the angle
+//   badge and the text editor stay reachable while an element hangs over the
+//   page edge.
+// Texts get the same frame as signatures, but only corner handles, which
+// scale the font size (never stretching the glyphs).
 // All interaction maths happens in viewport space (./geometry); every change is
 // converted to PDF space once and handed to the app, which updates the model and
 // calls `sync`, so what is drawn is always derived from the model.
 
-import type { DocumentState, PlacedElement, SignatureElement } from "../model";
+import type { DocumentState, PlaceDateElement, PlacedElement, SignatureElement } from "../model";
 import { elementsOnPage, getElement } from "../model";
+import { formatPlaceDate } from "../placeDate/format";
 import {
   boxFromGeometry,
   boxPoint,
@@ -18,14 +23,17 @@ import {
   isCorner,
   keepOnPage,
   moveBox,
+  pdfUnitInPx,
   resizeBox,
   rotateBox,
+  scaleTextBox,
   type Box,
   type ElementGeometry,
   type Handle,
   type Point,
 } from "./geometry";
 import type { ShownPage } from "./pageView";
+import { createPlaceDateEditor } from "./placeDateEditor";
 
 export interface OverlayCallbacks {
   /** The user selected an element (left button down on it) or clicked empty page area (`null`). */
@@ -34,6 +42,12 @@ export interface OverlayCallbacks {
   update(id: string, geometry: ElementGeometry): void;
   /** The user clicked the frame's "×". */
   remove(id: string): void;
+  /** The user double-clicked a place/date text. */
+  editPlaceDate(id: string): void;
+  /** The inline editor was committed (Enter or a click outside); `date` is DD.MM.YYYY or empty. */
+  commitPlaceDate(id: string, place: string, date: string): void;
+  /** The inline editor was cancelled (Esc). */
+  cancelPlaceDate(id: string): void;
 }
 
 export interface Overlay {
@@ -86,6 +100,8 @@ interface Drag {
   /** Pointer position in viewport space at the start. */
   startPointer: Point;
   startBox: Box;
+  /** Font size at the start, for texts. */
+  startFontSize: number | null;
 }
 
 const SIGNATURE_ALT = "Unterschrift";
@@ -100,7 +116,13 @@ export function createOverlay(
   let shown: ShownPage | null = null;
   let drag: Drag | null = null;
   const images = new Map<string, HTMLImageElement>();
+  const texts = new Map<string, HTMLElement>();
   const urls = new Map<string, string>();
+
+  const editor = createPlaceDateEditor({
+    commit: (id, place, date) => callbacks.commitPlaceDate(id, place, date),
+    cancel: (id) => callbacks.cancelPlaceDate(id),
+  });
 
   const imageLayer = document.createElement("div");
   imageLayer.className = "overlay-images";
@@ -164,12 +186,18 @@ export function createOverlay(
   frame.addEventListener("pointerdown", (event) => {
     if (event.target === frame) startDrag(event, frame, { type: "move" });
   });
+  // The frame lies on top of the selected element, so it gets the double-click.
+  frame.addEventListener("dblclick", (event) => {
+    if (event.target !== frame) return;
+    const selected = selectedOnPage();
+    if (selected?.kind === "placeDate") callbacks.editPlaceDate(selected.id);
+  });
 
   const badge = document.createElement("div");
   badge.className = "rotation-badge";
   badge.hidden = true;
 
-  frameLayer.append(frame, badge);
+  frameLayer.append(frame, badge, editor.element);
   stage.append(imageLayer, frameLayer);
 
   background.addEventListener("pointerdown", (event) => {
@@ -177,12 +205,17 @@ export function createOverlay(
     if (event.button === 0 && state?.selectedElementId) callbacks.select(null);
   });
 
-  function selectedOnPage(): SignatureElement | null {
+  function selectedOnPage(): PlacedElement | null {
     if (!state || !shown || state.selectedElementId === null) return null;
     const element = getElement(state, state.selectedElementId);
-    return element && element.kind === "signature" && element.pageIndex === shown.pageIndex
-      ? element
-      : null;
+    return element && element.pageIndex === shown.pageIndex ? element : null;
+  }
+
+  /** The text whose editor is open, if it is on the shown page. */
+  function editingOnPage(): PlaceDateElement | null {
+    if (!state || !shown || state.editingElementId === null) return null;
+    const element = getElement(state, state.editingElementId);
+    return element?.kind === "placeDate" && element.pageIndex === shown.pageIndex ? element : null;
   }
 
   function urlFor(imageId: string): string | null {
@@ -228,11 +261,61 @@ export function createOverlay(
     return img;
   }
 
+  function createText(element: PlaceDateElement): HTMLElement {
+    const span = document.createElement("span");
+    span.className = "placed-text";
+    span.dataset.elementId = element.id;
+    span.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return; // only the left button grabs
+      callbacks.select(element.id);
+      startDrag(event, span, { type: "move" }, element.id);
+    });
+    span.addEventListener("dblclick", (event) => {
+      event.stopPropagation();
+      callbacks.editPlaceDate(element.id);
+    });
+    return span;
+  }
+
+  /**
+   * Lays a text out in its box: the box top is the ascender line and the line
+   * height is ascender minus descender (the @font-face pins the font's own
+   * metrics to exactly that), so the baseline lands where the PDF draws it.
+   */
+  function placeText(
+    span: HTMLElement,
+    element: PlaceDateElement,
+    box: Box,
+    pxPerUnit: number,
+  ): void {
+    const text = formatPlaceDate(element.place, element.date);
+    if (span.textContent !== text) span.textContent = text;
+    placeBox(span, box);
+    span.style.fontSize = `${element.fontSize * pxPerUnit}px`;
+    span.style.lineHeight = `${box.height}px`;
+  }
+
   function layout(): void {
     const onPage: PlacedElement[] = state && shown ? elementsOnPage(state, shown.pageIndex) : [];
+    const editing = editingOnPage();
+    const pxPerUnit = shown ? pdfUnitInPx(shown.viewport) : 1;
     const keep = new Set<string>();
     for (const element of onPage) {
-      if (element.kind !== "signature" || !shown) continue;
+      if (!shown) continue;
+      if (element.kind === "placeDate") {
+        keep.add(element.id);
+        let span = texts.get(element.id);
+        if (!span) {
+          // Appended once (moving a node would drop its pointer capture); elements
+          // are only ever added at the end of the model, so the order matches.
+          span = createText(element);
+          texts.set(element.id, span);
+          imageLayer.append(span);
+        }
+        placeText(span, element, boxFromGeometry(shown.viewport, element), pxPerUnit);
+        span.style.visibility = editing?.id === element.id ? "hidden" : "";
+        continue;
+      }
       const src = urlFor(element.imageId);
       if (!src) continue;
       keep.add(element.id);
@@ -245,17 +328,27 @@ export function createOverlay(
       if (img.getAttribute("src") !== src) img.src = src;
       placeBox(img, boxFromGeometry(shown.viewport, element));
     }
-    for (const [id, img] of images) {
-      if (!keep.has(id)) {
-        img.remove();
-        images.delete(id);
+    for (const nodes of [images, texts] as Map<string, HTMLElement>[]) {
+      for (const [id, node] of nodes) {
+        if (!keep.has(id)) {
+          node.remove();
+          nodes.delete(id);
+        }
       }
     }
     revokeUnused();
 
+    if (editing && shown) {
+      if (editor.editingId !== editing.id) editor.open(editing.id, editing.place, editing.date);
+      editor.position(boxFromGeometry(shown.viewport, editing), editing.fontSize * pxPerUnit);
+    } else if (editor.editingId !== null) {
+      editor.close();
+    }
+
     const selected = selectedOnPage();
     if (drag && (!selected || selected.id !== drag.id)) endDrag();
-    if (!selected || !shown) {
+    // While a text is edited, its inputs take the place of the frame.
+    if (!selected || !shown || selected.id === editing?.id) {
       frame.hidden = true;
       badge.hidden = true;
       return;
@@ -263,7 +356,11 @@ export function createOverlay(
     const box = boxFromGeometry(shown.viewport, selected);
     frame.hidden = false;
     placeBox(frame, box);
-    for (const [handle, el] of handles) el.style.cursor = handleCursor(handle, box.rotation);
+    for (const [handle, el] of handles) {
+      el.style.cursor = handleCursor(handle, box.rotation);
+      // Texts only scale (corners); stretching one side would distort the glyphs.
+      el.hidden = selected.kind === "placeDate" && !isCorner(handle);
+    }
     // Keep the "×" glyph upright.
     removeButton.style.transform = box.rotation ? `rotate(${-box.rotation}deg)` : "";
 
@@ -296,6 +393,7 @@ export function createOverlay(
       startClient: { x: event.clientX, y: event.clientY },
       startPointer: { x: event.clientX - stageRect.left, y: event.clientY - stageRect.top },
       startBox: boxFromGeometry(shown.viewport, element),
+      startFontSize: element.kind === "placeDate" ? element.fontSize : null,
     };
     try {
       target.setPointerCapture(event.pointerId);
@@ -319,12 +417,19 @@ export function createOverlay(
     const dx = event.clientX - drag.startClient.x;
     const dy = event.clientY - drag.startClient.y;
     let box: Box;
+    let fontSize: number | undefined;
     switch (drag.kind.type) {
       case "move":
         box = moveBox(drag.startBox, dx, dy);
         break;
       case "resize":
-        box = resizeBox(drag.startBox, drag.kind.handle, dx, dy);
+        if (drag.startFontSize !== null) {
+          const { handle } = drag.kind;
+          if (!isCorner(handle)) return; // texts have no edge handles
+          ({ box, fontSize } = scaleTextBox(drag.startBox, handle, dx, dy, drag.startFontSize));
+        } else {
+          box = resizeBox(drag.startBox, drag.kind.handle, dx, dy);
+        }
         break;
       case "rotate":
         box = rotateBox(
@@ -336,7 +441,8 @@ export function createOverlay(
         break;
     }
     const page = { width: shown.viewport.width, height: shown.viewport.height };
-    callbacks.update(drag.id, boxToGeometry(shown.viewport, keepOnPage(box, page)));
+    const geometry = boxToGeometry(shown.viewport, keepOnPage(box, page));
+    callbacks.update(drag.id, fontSize === undefined ? geometry : { ...geometry, fontSize });
   }
 
   function onPointerEnd(event: PointerEvent): void {
@@ -367,9 +473,12 @@ export function createOverlay(
       if (next !== state) {
         // Another document (or none): drop everything that belonged to the old one.
         endDrag();
+        editor.close();
         state = next;
         for (const img of images.values()) img.remove();
         images.clear();
+        for (const span of texts.values()) span.remove();
+        texts.clear();
         for (const url of urls.values()) env.revokeObjectURL(url);
         urls.clear();
       }

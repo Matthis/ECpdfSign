@@ -5,6 +5,7 @@ import { acceptOpenedPdf, pickPdf, pickSignaturePng, savePdf } from "./backend";
 import { loadPdfDocument } from "./pdf/document";
 import { buildSignedPdf } from "./pdf/save";
 import { setupPdfjs } from "./pdf/setup";
+import { loadBundledFont } from "./placeDate/font";
 import { createConfirmDialog } from "./ui/confirmDialog";
 import { createMessageBar } from "./ui/messageBar";
 import { shortcutFor } from "./ui/keyboard";
@@ -42,6 +43,9 @@ const overlay = createOverlay(pageStage, pageViewElement, {
   select: (id) => app.selectElement(id),
   update: (id, geometry) => app.updateElement(id, geometry),
   remove: (id) => app.removeElement(id),
+  editPlaceDate: (id) => app.editPlaceDate(id),
+  commitPlaceDate: (id, place, date) => void app.commitPlaceDate(id, place, date),
+  cancelPlaceDate: (id) => app.cancelPlaceDate(id),
 });
 pageView.onViewportShown((shown) => overlay.setShownPage(shown));
 const discardDialog = createConfirmDialog(byId<HTMLDialogElement>("discard-dialog"));
@@ -53,6 +57,7 @@ app = createApp({
   loadPdfDocument,
   pickSignaturePng,
   decodePng,
+  loadPlaceDateFont: loadBundledFont,
   buildSignedPdf,
   savePdf,
   confirmDiscard: () => discardDialog.ask(),

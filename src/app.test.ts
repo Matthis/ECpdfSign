@@ -10,7 +10,10 @@ import { OWNER_PASSWORD_ONLY_PDF, USER_PASSWORD_PDF } from "./pdf/encryptedFixtu
 import { getDocument, OPS } from "./pdf/pdfjs";
 import { buildSignedPdf } from "./pdf/save";
 import { makeMalformedFormPdf, makeSignedPdf } from "./pdf/signatureFixtures.test-data";
+import { bundledFont } from "./placeDate/fontFixture.test-data";
+import { textBoxSize } from "./placeDate/metrics";
 import { encodePng, makeAnimatedPng, makePng } from "./signature/pngFixtures.test-data";
+import { addPlaceDate, type PlaceDateElement } from "./model";
 import type { ShownPage } from "./ui/pageView";
 
 async function makePdf(pageCount: number): Promise<Uint8Array> {
@@ -48,6 +51,8 @@ function setup() {
     }),
     pickSignaturePng: vi.fn(async () => pngPicks.shift() ?? null),
     decodePng: vi.fn(async (_bytes: Uint8Array) => undefined),
+    loadPlaceDateFont: vi.fn(async () => bundledFont()),
+    now: () => new Date(2026, 9, 17, 9, 30),
     buildSignedPdf: vi.fn(buildSignedPdf),
     savePdf: vi.fn(async (_bytes: Uint8Array): Promise<string | null> => "vertrag_signiert.pdf"),
     confirmDiscard: vi.fn(async () => true),
@@ -387,6 +392,7 @@ describe("signature toolbar state", () => {
     deps.pickSignaturePng.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
     const pending = app.insertSignature();
     expect(enabled("insertSignature")).toBe(false);
+    expect(enabled("insertPlaceDate")).toBe(false);
     await app.insertSignature(); // ignored meanwhile
     expect(deps.pickSignaturePng).toHaveBeenCalledTimes(1);
     release(null);
@@ -704,6 +710,7 @@ describe("save toolbar state", () => {
     await vi.waitFor(() => expect(deps.pickPdf).toHaveBeenCalledTimes(2));
 
     expect(enabled("save")).toBe(false);
+    expect(enabled("insertPlaceDate")).toBe(false);
     await app.save();
     expect(deps.buildSignedPdf).not.toHaveBeenCalled();
 
@@ -763,6 +770,7 @@ describe("matrix: Save", () => {
     expect(enabled("save")).toBe(false);
     expect(enabled("open")).toBe(false);
     expect(enabled("insertSignature")).toBe(false);
+    expect(enabled("insertPlaceDate")).toBe(false);
     expect(deps.setBusy).toHaveBeenLastCalledWith(true);
     await app.save();
     await app.openPdf();
@@ -1158,5 +1166,401 @@ describe("story 4: digitally signed PDFs", () => {
         }
       });
     }
+  });
+});
+
+describe("story 6: place/date texts", () => {
+  const TODAY = "17.10.2026";
+  const A4 = { width: 595, height: 842 };
+
+  /** The (only) place/date text of the document. */
+  function textOf(app: ReturnType<typeof setup>["app"]): PlaceDateElement {
+    const texts = app.getDocument()!.state.elements.filter((e) => e.kind === "placeDate");
+    expect(texts).toHaveLength(1);
+    return texts[0] as PlaceDateElement;
+  }
+
+  function expectedSize(text: string, fontSize = 11) {
+    return textBoxSize(bundledFont().metrics, text, fontSize);
+  }
+
+  describe("matrix: No document", () => {
+    it("'Ort/Datum einfügen' is disabled without a PDF and enabled with one", async () => {
+      const empty = setup();
+      expect(empty.enabled("insertPlaceDate")).toBeUndefined(); // the toolbar starts disabled
+      await empty.app.insertPlaceDate();
+      expect(empty.deps.loadPlaceDateFont).not.toHaveBeenCalled();
+
+      const { enabled } = await withDocument();
+      expect(enabled("insertPlaceDate")).toBe(true);
+    });
+  });
+
+  describe("matrix: Insert below signature", () => {
+    it("adds '<today>' below the selected signature, left-aligned, selected and in edit mode", async () => {
+      const { app, insert } = await withDocument();
+      app.selectPage(1);
+      await insert(PNG);
+      const signature = app.getDocument()!.state.elements[0];
+
+      app.handleToolbarAction("insertPlaceDate");
+      await vi.waitFor(() => expect(app.getDocument()!.state.elements).toHaveLength(2));
+
+      const state = app.getDocument()!.state;
+      const text = textOf(app);
+      expect(text).toMatchObject({ pageIndex: 1, place: "", date: TODAY, fontSize: 11, rotation: 0 });
+      expect(state.selectedElementId).toBe(text.id);
+      expect(state.editingElementId).toBe(text.id);
+      const size = expectedSize(TODAY);
+      expect(text.rect.width).toBeCloseTo(size.width, 6);
+      expect(text.rect.height).toBeCloseTo(size.height, 6);
+      // Left-aligned with the signature, just below it (PDF y grows upwards).
+      expect(text.rect.x).toBeCloseTo(signature.rect.x, 6);
+      const gap = signature.rect.y - (text.rect.y + text.rect.height);
+      expect(gap).toBeGreaterThan(0);
+      expect(gap).toBeLessThan(size.height);
+    });
+
+    it("confirming 'München' gives 'München, <today>' and keeps the text's left edge and top", async () => {
+      const { app, insert } = await withDocument();
+      await insert(PNG);
+      await app.insertPlaceDate();
+      const before = { ...textOf(app).rect };
+
+      await app.commitPlaceDate(textOf(app).id, "München", TODAY);
+
+      const text = textOf(app);
+      expect(text).toMatchObject({ place: "München", date: TODAY });
+      expect(app.getDocument()!.state.editingElementId).toBeNull();
+      expect(app.getDocument()!.state.selectedElementId).toBe(text.id);
+      expect(text.rect.width).toBeCloseTo(expectedSize("München, 17.10.2026").width, 6);
+      expect(text.rect.x).toBeCloseTo(before.x, 6);
+      expect(text.rect.y + text.rect.height).toBeCloseTo(before.y + before.height, 6);
+    });
+  });
+
+  describe("matrix: Insert without signature / No room below", () => {
+    it("centers the text on the current page without a selected signature", async () => {
+      const { app } = await withDocument();
+      app.selectPage(2);
+      await app.insertPlaceDate();
+      const text = textOf(app);
+      expect(text.pageIndex).toBe(2);
+      expect(text.rect.x + text.rect.width / 2).toBeCloseTo(A4.width / 2, 6);
+      expect(text.rect.y + text.rect.height / 2).toBeCloseTo(A4.height / 2, 6);
+    });
+
+    it("goes to the right of a signature at the bottom edge, vertically centered", async () => {
+      const { app, insert } = await withDocument();
+      await insert(PNG);
+      const signature = app.getDocument()!.state.elements[0];
+      const rect = { ...signature.rect, x: 50, y: 2 };
+      app.updateElement(signature.id, { rect, rotation: 0 });
+
+      await app.insertPlaceDate();
+
+      const text = textOf(app);
+      expect(text.rect.x).toBeGreaterThan(rect.x + rect.width);
+      expect(text.rect.y + text.rect.height / 2).toBeCloseTo(rect.y + rect.height / 2, 6);
+    });
+
+    it("the place starts empty on every insert", async () => {
+      const { app } = await withDocument();
+      await app.insertPlaceDate();
+      await app.commitPlaceDate(textOf(app).id, "München", TODAY);
+      await app.insertPlaceDate();
+      const texts = app.getDocument()!.state.elements as PlaceDateElement[];
+      expect(texts.map((t) => t.place)).toEqual(["München", ""]);
+    });
+  });
+
+  describe("matrix: Escape on insert / Re-edit / Date picker", () => {
+    it("Esc after a fresh insert leaves '<today>' with an empty place", async () => {
+      const { app } = await withDocument();
+      await app.insertPlaceDate();
+      app.cancelPlaceDate(textOf(app).id);
+      expect(textOf(app)).toMatchObject({ place: "", date: TODAY });
+      expect(app.getDocument()!.state.editingElementId).toBeNull();
+    });
+
+    it("double-click edits again; a new place keeps the date", async () => {
+      const { app } = await withDocument();
+      await app.insertPlaceDate();
+      const id = textOf(app).id;
+      await app.commitPlaceDate(id, "München", TODAY);
+      app.selectElement(null);
+
+      app.editPlaceDate(id);
+      expect(app.getDocument()!.state.editingElementId).toBe(id);
+      expect(app.getDocument()!.state.selectedElementId).toBe(id);
+      await app.commitPlaceDate(id, "Berlin", TODAY);
+      expect(textOf(app)).toMatchObject({ place: "Berlin", date: TODAY });
+    });
+
+    it("a picked date replaces today's", async () => {
+      const { app } = await withDocument();
+      await app.insertPlaceDate();
+      await app.commitPlaceDate(textOf(app).id, "München", "01.11.2026");
+      expect(textOf(app)).toMatchObject({ place: "München", date: "01.11.2026" });
+    });
+
+    it("keeps the top-left corner of a rotated text when its width changes", async () => {
+      const { app, deps, loaded } = await withDocument();
+      const viewport = (await loaded[0].pdf.proxy.getPage(1)).getViewport({ scale: 1.5 });
+      deps.pageView.getShownPage.mockReturnValue({ pageIndex: 0, viewport });
+      await app.insertPlaceDate();
+      const id = textOf(app).id;
+      app.updateElement(id, { rect: textOf(app).rect, rotation: 30 });
+      const topLeft = (rect: PlaceDateElement["rect"], rotation: number) => {
+        const cx = rect.x + rect.width / 2;
+        const cy = rect.y + rect.height / 2;
+        const r = (-rotation * Math.PI) / 180; // clockwise on screen = negative in PDF space
+        const u = -rect.width / 2;
+        const v = rect.height / 2;
+        return { x: cx + u * Math.cos(r) - v * Math.sin(r), y: cy + u * Math.sin(r) + v * Math.cos(r) };
+      };
+      const before = topLeft(textOf(app).rect, 30);
+
+      await app.commitPlaceDate(id, "Ærøskøbing", TODAY);
+
+      const after = topLeft(textOf(app).rect, 30);
+      expect(after.x).toBeCloseTo(before.x, 6);
+      expect(after.y).toBeCloseTo(before.y, 6);
+      expect(textOf(app).rect.width).toBeCloseTo(expectedSize("Ærøskøbing, 17.10.2026").width, 6);
+    });
+  });
+
+  describe("matrix: Only date / Only place / Both empty", () => {
+    it("an empty place gives only the date, a cleared date only the place", async () => {
+      const { app } = await withDocument();
+      await app.insertPlaceDate();
+      const id = textOf(app).id;
+      await app.commitPlaceDate(id, "", TODAY);
+      expect(textOf(app).rect.width).toBeCloseTo(expectedSize(TODAY).width, 6);
+      app.editPlaceDate(id);
+      await app.commitPlaceDate(id, "München", "");
+      expect(textOf(app)).toMatchObject({ place: "München", date: "" });
+      expect(textOf(app).rect.width).toBeCloseTo(expectedSize("München").width, 6);
+    });
+
+    it("both parts empty on commit removes the text", async () => {
+      const { app, enabled } = await withDocument();
+      await app.insertPlaceDate();
+      const id = textOf(app).id;
+      await app.commitPlaceDate(id, "  ", "");
+      const state = app.getDocument()!.state;
+      expect(state.elements).toHaveLength(0);
+      expect(state.selectedElementId).toBeNull();
+      expect(state.editingElementId).toBeNull();
+      expect(enabled("save")).toBe(false);
+    });
+  });
+
+  describe("matrix: Typing Entf while editing / Remove", () => {
+    it("shortcuts do nothing while a text is being edited", async () => {
+      const { app } = await withDocument();
+      await app.insertPlaceDate();
+      expect(app.handleShortcut("removeElement")).toBe(false);
+      expect(app.handleShortcut("deselect")).toBe(false);
+      expect(app.getDocument()!.state.elements).toHaveLength(1);
+    });
+
+    it("Entf or the '×' removes a selected text", async () => {
+      const { app } = await withDocument();
+      await app.insertPlaceDate();
+      await app.commitPlaceDate(textOf(app).id, "München", TODAY);
+      expect(app.handleShortcut("removeElement")).toBe(true);
+      expect(app.getDocument()!.state.elements).toHaveLength(0);
+
+      await app.insertPlaceDate();
+      const id = textOf(app).id;
+      app.cancelPlaceDate(id);
+      app.removeElement(id);
+      expect(app.getDocument()!.state.elements).toHaveLength(0);
+    });
+  });
+
+  describe("matrix: Resize", () => {
+    it("stores the font size the overlay reports with the scaled box", async () => {
+      const { app } = await withDocument();
+      await app.insertPlaceDate();
+      const text = textOf(app);
+      app.updateElement(text.id, { rect: { ...text.rect, width: text.rect.width * 2, height: text.rect.height * 2 }, rotation: 0, fontSize: 22 });
+      expect(textOf(app).fontSize).toBe(22);
+    });
+  });
+
+  it("switching pages ends editing of a text on the old page", async () => {
+    const { app } = await withDocument();
+    await app.insertPlaceDate();
+    app.selectPage(3);
+    expect(app.getDocument()!.state.editingElementId).toBeNull();
+    expect(app.getDocument()!.state.elements).toHaveLength(1);
+  });
+
+  it("loads the font once; a failed load shows a German message, adds nothing and is retried", async () => {
+    const { app, deps } = await withDocument();
+    deps.loadPlaceDateFont.mockRejectedValueOnce(new Error("404"));
+    await app.insertPlaceDate();
+    expect(deps.messages.show).toHaveBeenCalledWith(MESSAGES.fontFailed);
+    expect(MESSAGES.fontFailed).toBe("Die Schrift für Ort und Datum konnte nicht geladen werden.");
+    expect(app.getDocument()!.state.elements).toHaveLength(0);
+
+    await app.insertPlaceDate();
+    await app.insertPlaceDate();
+    expect(app.getDocument()!.state.elements).toHaveLength(2);
+    expect(deps.loadPlaceDateFont).toHaveBeenCalledTimes(2);
+  });
+
+  it("saves texts with the embedded font: pdf.js extracts the exact strings", async () => {
+    const { app, deps, insert } = await withDocument();
+    app.selectPage(2);
+    await insert(PNG);
+    await app.insertPlaceDate();
+    await app.commitPlaceDate(textOf(app).id, "Łódź", TODAY);
+
+    app.handleToolbarAction("save");
+    await vi.waitFor(() => expect(deps.messages.info).toHaveBeenCalled());
+
+    const [, elements, , , fontBytes] = deps.buildSignedPdf.mock.calls[0];
+    expect(elements).toHaveLength(2);
+    expect(fontBytes).toEqual(bundledFont().bytes);
+    const saved = deps.savePdf.mock.calls[0][0];
+    const task = getDocument({ data: saved.slice() });
+    try {
+      const doc = await task.promise;
+      const content = await (await doc.getPage(3)).getTextContent();
+      const strings = content.items.flatMap((item) => ("str" in item && item.str ? [item.str] : []));
+      expect(strings).toEqual(["Łódź, 17.10.2026"]);
+    } finally {
+      await task.destroy();
+    }
+  });
+
+  it("passes no font when there are only signatures", async () => {
+    const { app, deps, insert } = await withDocument();
+    await insert(PNG);
+    app.handleToolbarAction("save");
+    await vi.waitFor(() => expect(deps.messages.info).toHaveBeenCalled());
+    expect(deps.buildSignedPdf.mock.calls[0][4]).toBeNull();
+    expect(deps.loadPlaceDateFont).not.toHaveBeenCalled();
+  });
+});
+
+describe("story 6: review fixes", () => {
+  const TODAY = "17.10.2026";
+
+  function texts(app: ReturnType<typeof setup>["app"]): PlaceDateElement[] {
+    return app.getDocument()!.state.elements.filter((e) => e.kind === "placeDate") as PlaceDateElement[];
+  }
+
+  /** Holds the next font load until `release` is called. */
+  function holdFont(deps: ReturnType<typeof setup>["deps"]) {
+    let release!: () => void;
+    deps.loadPlaceDateFont.mockImplementationOnce(
+      () => new Promise((resolve) => (release = () => resolve(bundledFont()))),
+    );
+    return () => release();
+  }
+
+  it("disables 'Ort/Datum einfügen' while a text is inserted; a second insert meanwhile is ignored", async () => {
+    const { app, deps, enabled } = await withDocument();
+    const release = holdFont(deps);
+    const first = app.insertPlaceDate();
+    expect(enabled("insertPlaceDate")).toBe(false);
+    expect(enabled("insertSignature")).toBe(false);
+    await app.insertPlaceDate();
+    release();
+    await first;
+    expect(texts(app)).toHaveLength(1);
+    expect(deps.loadPlaceDateFont).toHaveBeenCalledTimes(1);
+    expect(enabled("insertPlaceDate")).toBe(true);
+  });
+
+  it("a double-click while a text is being inserted does not take over the editor", async () => {
+    const { app, deps } = await withDocument();
+    const release = holdFont(deps);
+    const pending = app.insertPlaceDate();
+    const state = app.getDocument()!.state;
+    const existing = addPlaceDate(state, {
+      pageIndex: 0,
+      rect: { x: 10, y: 10, width: 60, height: 15 },
+      rotation: 0,
+      place: "Bonn",
+      date: "",
+      fontSize: 11,
+    });
+    app.editPlaceDate(existing.id);
+    expect(state.editingElementId).toBeNull();
+    release();
+    await pending;
+    const inserted = texts(app).find((t) => t.id !== existing.id)!;
+    expect(state.editingElementId).toBe(inserted.id);
+  });
+
+  it("a page switch while the text is being inserted cancels the insert", async () => {
+    const { app, deps } = await withDocument();
+    const release = holdFont(deps);
+    const pending = app.insertPlaceDate();
+    app.selectPage(3);
+    release();
+    await pending;
+    expect(texts(app)).toHaveLength(0);
+    expect(app.getDocument()!.state.editingElementId).toBeNull();
+  });
+
+  it("centers a new text when the selection is a text, not a signature", async () => {
+    const { app } = await withDocument();
+    await app.insertPlaceDate();
+    await app.commitPlaceDate(texts(app)[0].id, "München", TODAY);
+    const first = texts(app)[0];
+    app.updateElement(first.id, { rect: { ...first.rect, x: 20, y: 30 }, rotation: 0 });
+    expect(app.getDocument()!.state.selectedElementId).toBe(first.id);
+
+    await app.insertPlaceDate();
+    const second = texts(app)[1];
+    expect(second.rect.x + second.rect.width / 2).toBeCloseTo(595 / 2, 6);
+    expect(second.rect.y + second.rect.height / 2).toBeCloseTo(842 / 2, 6);
+  });
+
+  it("keeps a re-edited text on the page (16 px, as when dragging)", async () => {
+    const { app } = await withDocument();
+    await app.insertPlaceDate();
+    const id = texts(app)[0].id;
+    await app.commitPlaceDate(id, "München", TODAY);
+    const rect = texts(app)[0].rect;
+    // Hangs over the left edge with only its right end on the page.
+    app.updateElement(id, { rect: { ...rect, x: 20 - rect.width }, rotation: 0 });
+
+    await app.commitPlaceDate(id, "Ulm", "");
+
+    const after = texts(app)[0].rect;
+    expect(after.x + after.width).toBeGreaterThanOrEqual(16 - 1e-6);
+  });
+
+  it("normalizes place and date to NFC", async () => {
+    const { app } = await withDocument();
+    await app.insertPlaceDate();
+    const id = texts(app)[0].id;
+    await app.commitPlaceDate(id, "Lo\u0301dz\u0301", TODAY);
+    expect(texts(app)[0].place).toBe("L\u00f3d\u017a");
+  });
+
+  it("shows the font message, not the build error, if the font cannot be loaded for saving", async () => {
+    const { app, deps } = await withDocument();
+    addPlaceDate(app.getDocument()!.state, {
+      pageIndex: 0,
+      rect: { x: 10, y: 10, width: 60, height: 15 },
+      rotation: 0,
+      place: "Bonn",
+      date: "",
+      fontSize: 11,
+    });
+    deps.loadPlaceDateFont.mockRejectedValueOnce(new Error("404"));
+    await app.save();
+    expect(deps.messages.show).toHaveBeenCalledWith(MESSAGES.fontFailed);
+    expect(deps.messages.show).not.toHaveBeenCalledWith(MESSAGES.buildFailed);
+    expect(deps.buildSignedPdf).not.toHaveBeenCalled();
+    expect(deps.savePdf).not.toHaveBeenCalled();
   });
 });

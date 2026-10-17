@@ -1,10 +1,12 @@
-// Application flow: opening a PDF, selecting pages, placing signatures and saving.
+// Application flow: opening a PDF, selecting pages, placing signatures and
+// place/date texts, and saving.
 // DOM-free so it can be unit-tested with fakes; src/main.ts wires it to the
 // real backend and views.
 
 import type { OpenedPdf } from "./backend";
 import {
   addImage,
+  addPlaceDate,
   addSignature,
   clampPageIndex,
   createDocumentState,
@@ -13,6 +15,7 @@ import {
   removeElement as removeFromModel,
   selectElement as selectInModel,
   updateElementGeometry,
+  updatePlaceDateText,
   type DocumentState,
   type PlacedElement,
   type StoredImage,
@@ -20,9 +23,20 @@ import {
 import { classifyLoadError, type LoadedPdf } from "./pdf/document";
 import type { PDFDocumentProxy } from "./pdf/pdfjs";
 import type { PageViewport } from "./pdf/viewport";
+import { formatPlaceDate, isEmptyPlaceDate, todayDdMmYyyy } from "./placeDate/format";
+import { DEFAULT_FONT_SIZE, textBoxSize, type PlaceDateFont } from "./placeDate/metrics";
 import { checkPngEmbeddable } from "./signature/pdfEmbed";
 import { readPngInfo } from "./signature/png";
-import { boxToGeometry, defaultPlacement, type ElementGeometry } from "./ui/geometry";
+import {
+  boxFromGeometry,
+  boxToGeometry,
+  defaultPlacement,
+  keepOnPage,
+  pdfUnitInPx,
+  placeDatePlacement,
+  resizeFromTopLeft,
+  type ElementGeometry,
+} from "./ui/geometry";
 import type { Shortcut } from "./ui/keyboard";
 import type { ShownPage } from "./ui/pageView";
 import type { ToolbarAction } from "./ui/toolbar";
@@ -37,6 +51,8 @@ export const MESSAGES = {
   buildFailed: "Die PDF-Datei konnte nicht erstellt werden.",
   saveFailed:
     "Die Datei konnte nicht gespeichert werden. Ist sie in einem anderen Programm geöffnet oder schreibgeschützt?",
+  fontFailed: "Die Schrift für Ort und Datum konnte nicht geladen werden.",
+  placeDateFailed: "Ort und Datum konnten nicht eingefügt werden.",
   /** Info notice right after opening a digitally signed PDF. */
   signedPdf: "Dieses PDF ist digital signiert. Beim Speichern werden die Signaturen ungültig.",
 } as const;
@@ -64,12 +80,20 @@ export interface AppDeps {
    * app lets the webview decode it); rejects if the image cannot be shown.
    */
   decodePng?(bytes: Uint8Array): Promise<void>;
-  /** Builds the signed copy (see pdf/save.ts); `pageViewports` holds a scale-1 viewport per used page. */
+  /** The bundled place/date font (file and metrics); loaded once, on the first text. */
+  loadPlaceDateFont(): Promise<PlaceDateFont>;
+  /** The current time, for today's date; defaults to the system clock. */
+  now?(): Date;
+  /**
+   * Builds the signed copy (see pdf/save.ts); `pageViewports` holds a scale-1
+   * viewport per used page, `fontBytes` the place/date font if there are texts.
+   */
   buildSignedPdf(
     sourceBytes: Uint8Array,
     elements: readonly PlacedElement[],
     images: ReadonlyMap<string, StoredImage>,
     pageViewports: ReadonlyMap<number, PageViewport>,
+    fontBytes: Uint8Array | null,
   ): Promise<Uint8Array>;
   /** Native save dialog plus write; resolves to the saved file name, or `null` if cancelled. */
   savePdf(bytes: Uint8Array): Promise<string | null>;
@@ -96,7 +120,11 @@ export interface AppDeps {
     setDocument(doc: PDFDocumentProxy | null, selectedIndex: number): void;
     setSelected(index: number): void;
   };
-  /** Contract: `sync` redraws the placed elements from the model; a new state object means a new document. */
+  /**
+   * Contract: `sync` redraws the placed elements from the model, including
+   * the inline editor of `state.editingElementId`; a new state object means a
+   * new document.
+   */
   overlay: { sync(state: DocumentState | null): void };
   /** `show` is an error, `info` a neutral notice (e.g. after saving). */
   messages: { show(text: string): void; info(text: string): void; hide(): void };
@@ -119,6 +147,22 @@ export interface App {
   selectPage(pageIndex: number): void;
   /** Loads a PNG via the native dialog and places it, selected, on the current page. */
   insertSignature(): Promise<void>;
+  /**
+   * Adds a "<today>" text on the current page (below or beside the selected
+   * signature, else centered), selected and straight in edit mode.
+   */
+  insertPlaceDate(): Promise<void>;
+  /** Opens the inline editor of a place/date text (double-click). */
+  editPlaceDate(id: string): void;
+  /**
+   * Ends editing with the given parts (`date` as DD.MM.YYYY or empty). The
+   * text keeps its top-left corner; with both parts empty it is removed.
+   * Applied at once when the text's page is shown (always, in the app);
+   * otherwise once the page's viewport is loaded, which the promise awaits.
+   */
+  commitPlaceDate(id: string, place: string, date: string): Promise<void>;
+  /** Ends editing without a change (Esc): the text keeps its values from before. */
+  cancelPlaceDate(id: string): void;
   /** Selects an element, or nothing with `null`. */
   selectElement(id: string | null): void;
   /** Stores new geometry for an element (from the overlay while the user drags). */
@@ -146,6 +190,21 @@ export function createApp(deps: AppDeps): App {
   let saving = false;
   /** Whether the bar shows the "Gespeichert" notice, which goes stale on the next element change. */
   let savedNoticeShown = false;
+  let fontRequest: Promise<PlaceDateFont> | null = null;
+  /** The place/date font once loaded; every text was inserted after that. */
+  let font: PlaceDateFont | null = null;
+
+  /** Loads the place/date font once; a failed load is retried next time. */
+  function placeDateFont(): Promise<PlaceDateFont> {
+    fontRequest ??= deps.loadPlaceDateFont().then(
+      (loaded) => (font = loaded),
+      (error: unknown) => {
+        fontRequest = null;
+        throw error;
+      },
+    );
+    return fontRequest;
+  }
 
   // Every message goes through here, so `savedNoticeShown` stays accurate.
   const messages = {
@@ -182,6 +241,7 @@ export function createApp(deps: AppDeps): App {
   }
 
   function refreshToolbar(): void {
+    deps.toolbar.setEnabled("insertPlaceDate", editable() && !inserting);
     deps.toolbar.setEnabled("insertSignature", editable() && !inserting);
     deps.toolbar.setEnabled(
       "save",
@@ -202,6 +262,10 @@ export function createApp(deps: AppDeps): App {
     // A selection on another page would be invisible yet removable: drop it.
     if (getSelectedElement(current.state)?.pageIndex !== index) {
       selectInModel(current.state, null);
+    }
+    const editing = current.state.editingElementId;
+    if (editing !== null && getElement(current.state, editing)?.pageIndex !== index) {
+      current.state.editingElementId = null;
     }
     deps.thumbnails.setSelected(index);
     deps.pageView.showPage(index);
@@ -347,6 +411,124 @@ export function createApp(deps: AppDeps): App {
     }
   }
 
+  async function insertPlaceDate(): Promise<void> {
+    const doc = current;
+    if (!doc || inserting || !editable()) return;
+    inserting = true;
+    refreshToolbar();
+    messages.hide();
+    const pageIndex = doc.state.selectedPageIndex;
+    // Another document or page meanwhile: the text would open in edit mode where it is not shown.
+    const stale = () => current !== doc || doc.state.selectedPageIndex !== pageIndex;
+    try {
+      let loaded: PlaceDateFont;
+      try {
+        loaded = await placeDateFont();
+      } catch (error) {
+        log.error("loading the place/date font failed", error);
+        messages.show(MESSAGES.fontFailed);
+        return;
+      }
+      if (stale()) return;
+      const viewport = await viewportFor(doc, pageIndex);
+      if (stale()) return;
+
+      // The place starts empty on every insert; the date is today.
+      const place = "";
+      const date = todayDdMmYyyy(deps.now?.() ?? new Date());
+      const size = textBoxSize(loaded.metrics, formatPlaceDate(place, date), DEFAULT_FONT_SIZE);
+      const px = pdfUnitInPx(viewport);
+      const selected = getSelectedElement(doc.state);
+      const signature =
+        selected?.kind === "signature" && selected.pageIndex === pageIndex
+          ? boxFromGeometry(viewport, selected)
+          : null;
+      const box = placeDatePlacement(
+        viewport,
+        { width: size.width * px, height: size.height * px },
+        signature,
+      );
+      const element = addPlaceDate(doc.state, {
+        pageIndex,
+        place,
+        date,
+        fontSize: DEFAULT_FONT_SIZE,
+        ...boxToGeometry(viewport, box),
+      });
+      selectInModel(doc.state, element.id);
+      doc.state.editingElementId = element.id;
+    } catch (error) {
+      log.error("inserting the place/date text failed", error);
+      messages.show(MESSAGES.placeDateFailed);
+    } finally {
+      inserting = false;
+      changed();
+    }
+  }
+
+  function editPlaceDate(id: string): void {
+    // While a text is being inserted, it is about to take over the editor.
+    if (!current || !editable() || inserting) return;
+    const element = getElement(current.state, id);
+    if (element?.kind !== "placeDate" || element.pageIndex !== current.state.selectedPageIndex) {
+      return;
+    }
+    selectInModel(current.state, id);
+    current.state.editingElementId = id;
+    changed();
+  }
+
+  function cancelPlaceDate(id: string): void {
+    if (!current) return;
+    if (current.state.editingElementId === id) current.state.editingElementId = null;
+    changed();
+  }
+
+  function commitPlaceDate(id: string, place: string, date: string): Promise<void> {
+    const doc = current;
+    if (!doc) return Promise.resolve();
+    if (doc.state.editingElementId === id) doc.state.editingElementId = null;
+    const element = getElement(doc.state, id);
+    // NFC, so a decomposed "ó" (o + combining accent) is one glyph, as in the preview.
+    const newPlace = place.normalize("NFC").trim();
+    const newDate = date.normalize("NFC").trim();
+    if (element?.kind !== "placeDate" || (newPlace === element.place && newDate === element.date)) {
+      changed();
+      return Promise.resolve();
+    }
+    if (isEmptyPlaceDate(newPlace, newDate)) {
+      removeFromModel(doc.state, id);
+      dropSavedNotice();
+      changed();
+      return Promise.resolve();
+    }
+
+    // The box follows the text; its top-left corner stays where it is.
+    const apply = (viewport: PageViewport): void => {
+      const target = getElement(doc.state, id);
+      if (current !== doc || target?.kind !== "placeDate" || !font) return;
+      const size = textBoxSize(font.metrics, formatPlaceDate(newPlace, newDate), target.fontSize);
+      const px = pdfUnitInPx(viewport);
+      const page = { width: viewport.width, height: viewport.height };
+      const box = keepOnPage(
+        resizeFromTopLeft(boxFromGeometry(viewport, target), size.width * px, size.height * px),
+        page,
+      );
+      updatePlaceDateText(doc.state, id, newPlace, newDate, boxToGeometry(viewport, box).rect);
+      dropSavedNotice();
+      changed();
+    };
+    const shown = deps.pageView.getShownPage();
+    if (shown && shown.pageIndex === element.pageIndex) {
+      apply(shown.viewport);
+      return Promise.resolve();
+    }
+    changed();
+    return viewportFor(doc, element.pageIndex).then(apply, (error: unknown) =>
+      log.error("updating the place/date text failed", error),
+    );
+  }
+
   function selectElement(id: string | null): void {
     if (!current) return;
     // Only elements of the current page can be selected; another page's
@@ -360,7 +542,9 @@ export function createApp(deps: AppDeps): App {
 
   function updateElement(id: string, geometry: ElementGeometry): void {
     if (!current) return;
-    if (updateElementGeometry(current.state, id, geometry.rect, geometry.rotation)) {
+    if (
+      updateElementGeometry(current.state, id, geometry.rect, geometry.rotation, geometry.fontSize)
+    ) {
       dropSavedNotice();
       changed();
     }
@@ -413,7 +597,17 @@ export function createApp(deps: AppDeps): App {
           const page = await doc.pdf.proxy.getPage(pageIndex + 1);
           viewports.set(pageIndex, page.getViewport({ scale: 1 }));
         }
-        bytes = await deps.buildSignedPdf(doc.state.sourceBytes, elements, images, viewports);
+        let fontBytes: Uint8Array | null = null;
+        if (elements.some((e) => e.kind === "placeDate")) {
+          try {
+            fontBytes = (await placeDateFont()).bytes;
+          } catch (error) {
+            log.error("loading the place/date font failed", error);
+            messages.show(MESSAGES.fontFailed);
+            return;
+          }
+        }
+        bytes = await deps.buildSignedPdf(doc.state.sourceBytes, elements, images, viewports, fontBytes);
       } catch (error) {
         log.error("building the signed PDF failed", error);
         messages.show(MESSAGES.buildFailed);
@@ -449,18 +643,25 @@ export function createApp(deps: AppDeps): App {
   return {
     handleToolbarAction(action) {
       if (action === "open") void openPdf();
+      else if (action === "insertPlaceDate") void insertPlaceDate();
       else if (action === "insertSignature") void insertSignature();
       else if (action === "save") void save();
     },
     openPdf,
     selectPage,
     insertSignature,
+    insertPlaceDate,
+    editPlaceDate,
+    commitPlaceDate,
+    cancelPlaceDate,
     selectElement,
     updateElement,
     removeElement,
     save,
     handleShortcut(shortcut) {
       if (confirming || !editable() || !current) return false;
+      // The inline editor handles its own keys.
+      if (current.state.editingElementId !== null) return false;
       if (shortcut === "removeElement") return removeSelected();
       if (current.state.selectedElementId === null) return false;
       selectElement(null);

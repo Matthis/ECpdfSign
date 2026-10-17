@@ -2,15 +2,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   addImage,
+  addPlaceDate,
   addSignature,
   createDocumentState,
-  type DocumentState,
+  getElement,
+  type PlaceDateElement,
   removeElement,
   selectElement,
   updateElementGeometry,
+  updatePlaceDateText,
 } from "../model";
+import { isEmptyPlaceDate } from "../placeDate/format";
 import type { PageViewport } from "../pdf/viewport";
-import { boxFromGeometry, boxToGeometry, type Box } from "./geometry";
+import { boxFromGeometry, boxToGeometry, type Box, type ElementGeometry } from "./geometry";
 import { createOverlay, formatAngle, handleCursor, type Overlay } from "./overlay";
 
 /**
@@ -47,12 +51,28 @@ function setup(pageCount = 5) {
       selectElement(state, id);
       overlay.sync(state);
     }),
-    update: vi.fn((id: string, g: { rect: DocumentState["elements"][number]["rect"]; rotation: number }) => {
-      updateElementGeometry(state, id, g.rect, g.rotation);
+    update: vi.fn((id: string, g: ElementGeometry) => {
+      updateElementGeometry(state, id, g.rect, g.rotation, g.fontSize);
       overlay.sync(state);
     }),
     remove: vi.fn((id: string) => {
       removeElement(state, id);
+      overlay.sync(state);
+    }),
+    editPlaceDate: vi.fn((id: string) => {
+      selectElement(state, id);
+      state.editingElementId = id;
+      overlay.sync(state);
+    }),
+    commitPlaceDate: vi.fn((id: string, place: string, date: string) => {
+      state.editingElementId = null;
+      const element = getElement(state, id);
+      if (isEmptyPlaceDate(place, date)) removeElement(state, id);
+      else if (element) updatePlaceDateText(state, id, place, date, element.rect);
+      overlay.sync(state);
+    }),
+    cancelPlaceDate: vi.fn((_id: string) => {
+      state.editingElementId = null;
       overlay.sync(state);
     }),
   };
@@ -64,6 +84,18 @@ function setup(pageCount = 5) {
   function add(pageIndex: number, box: Box, bytes = new Uint8Array([1, 2, 3])) {
     const imageId = addImage(state, bytes, 300, 100);
     const element = addSignature(state, { pageIndex, imageId, ...boxToGeometry(viewport, box) });
+    overlay.sync(state);
+    return element;
+  }
+
+  function addText(pageIndex: number, box: Box, place = "München", date = "17.10.2026", fontSize = 11) {
+    const element = addPlaceDate(state, {
+      pageIndex,
+      place,
+      date,
+      fontSize,
+      ...boxToGeometry(viewport, box),
+    });
     overlay.sync(state);
     return element;
   }
@@ -91,6 +123,7 @@ function setup(pageCount = 5) {
     callbacks,
     overlay,
     add,
+    addText,
     show,
     imgs,
     frame,
@@ -488,5 +521,210 @@ describe("pages, resizing and blob URLs", () => {
     const back = boxFromGeometry(vp, boxToGeometry(vp, box));
     expect(back.cx).toBeCloseTo(80);
     expect(back.width).toBeCloseTo(50);
+  });
+});
+
+describe("place/date texts", () => {
+  const TEXT_BOX: Box = { cx: 200, cy: 150, width: 132, height: 15, rotation: 0 };
+  const spans = (stage: HTMLElement) =>
+    Array.from(stage.querySelectorAll<HTMLElement>(".overlay-images .placed-text"));
+  const editor = (stage: HTMLElement) => stage.querySelector<HTMLElement>(".place-date-editor")!;
+  const placeInput = (stage: HTMLElement) => editor(stage).querySelector<HTMLInputElement>("input[type=text]")!;
+  const dateInput = (stage: HTMLElement) => editor(stage).querySelector<HTMLInputElement>("input[type=date]")!;
+  const key = (target: HTMLElement, k: string) =>
+    target.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
+
+  it("renders the text in the page-clipped layer, in its box, with the font size scaled to the zoom", () => {
+    const { stage, addText, show, shownBox } = setup();
+    addText(0, TEXT_BOX, "Łódź", "17.10.2026", 11);
+    show(0, 2);
+    const [span] = spans(stage);
+    expect(span.textContent).toBe("Łódź, 17.10.2026");
+    expect(parseFloat(span.style.fontSize)).toBeCloseTo(22);
+    const box = shownBox(span);
+    expect(box.width).toBeCloseTo(264);
+    expect(box.height).toBeCloseTo(30);
+    expect(parseFloat(span.style.lineHeight)).toBeCloseTo(30);
+  });
+
+  it("shows only the part that is given", () => {
+    const { stage, addText } = setup();
+    addText(0, TEXT_BOX, "", "17.10.2026");
+    addText(0, { ...TEXT_BOX, cy: 250 }, "Zürich", "");
+    expect(spans(stage).map((s) => s.textContent)).toEqual(["17.10.2026", "Zürich"]);
+  });
+
+  it("shows the frame with corner handles only, the rotation handle and the '×'", () => {
+    const { stage, state, addText, overlay, frame } = setup();
+    const t = addText(0, { ...TEXT_BOX, rotation: 30 });
+    selectElement(state, t.id);
+    overlay.sync(state);
+    expect(frame().hidden).toBe(false);
+    const visible = Array.from(frame().querySelectorAll<HTMLElement>(".frame-handle"))
+      .filter((h) => !h.hidden)
+      .map((h) => h.dataset.handle)
+      .sort();
+    expect(visible).toEqual(["ne", "nw", "se", "sw"]);
+    expect(frame().querySelector(".frame-rotate-handle")).not.toBeNull();
+    expect(frame().querySelector(".frame-remove")).not.toBeNull();
+    expect(spans(stage)[0].style.transform).toBe("rotate(30deg)");
+  });
+
+  it("a signature keeps all 8 handles, also after a text was selected", () => {
+    const { state, add, addText, overlay, frame } = setup();
+    const visible = () =>
+      Array.from(frame().querySelectorAll<HTMLElement>(".frame-handle"))
+        .filter((h) => !h.hidden)
+        .map((h) => h.dataset.handle)
+        .sort();
+    const all = ["e", "n", "ne", "nw", "s", "se", "sw", "w"];
+    const sig = add(0, BOX);
+    const t = addText(0, { ...TEXT_BOX, cy: 300 });
+    selectElement(state, sig.id);
+    overlay.sync(state);
+    expect(visible()).toEqual(all);
+    selectElement(state, t.id);
+    overlay.sync(state);
+    expect(visible()).toHaveLength(4);
+    selectElement(state, sig.id);
+    overlay.sync(state);
+    expect(visible()).toEqual(all);
+  });
+
+  it("a corner handle scales the font size and keeps the aspect ratio", () => {
+    const { state, addText, overlay, handle, callbacks } = setup();
+    const t = addText(0, TEXT_BOX);
+    selectElement(state, t.id);
+    overlay.sync(state);
+    pointer(handle("se"), "pointerdown", 0, 0);
+    pointer(handle("se"), "pointermove", 66, 0);
+    const geometry = callbacks.update.mock.calls.at(-1)![1];
+    expect(geometry.fontSize).toBeGreaterThan(11);
+    const text = getElement(state, t.id) as PlaceDateElement;
+    expect(text.fontSize).toBe(geometry.fontSize);
+    const box = boxFromGeometry(rotatedViewport(1), text);
+    expect(box.width / box.height).toBeCloseTo(132 / 15, 6);
+    expect(text.fontSize / 11).toBeCloseTo(box.height / 15, 6);
+  });
+
+  it("never scales below 6 pt", () => {
+    const { state, addText, overlay, handle } = setup();
+    const t = addText(0, TEXT_BOX);
+    selectElement(state, t.id);
+    overlay.sync(state);
+    pointer(handle("nw"), "pointerdown", 0, 0);
+    pointer(handle("nw"), "pointermove", 400, 400);
+    expect((getElement(state, t.id) as PlaceDateElement).fontSize).toBeCloseTo(6, 9);
+  });
+
+  it("moves and rotates like a signature", () => {
+    const { stage, state, addText, frame } = setup();
+    const t = addText(0, TEXT_BOX);
+    const [span] = spans(stage);
+    pointer(span, "pointerdown", 10, 10);
+    expect(state.selectedElementId).toBe(t.id);
+    pointer(span, "pointermove", 30, 15);
+    pointer(span, "pointerup", 30, 15);
+    const moved = boxFromGeometry(rotatedViewport(1), getElement(state, t.id)!);
+    expect(moved.cx).toBeCloseTo(220);
+    expect(moved.cy).toBeCloseTo(155);
+
+    const knob = frame().querySelector<HTMLElement>(".frame-rotate-handle")!;
+    pointer(knob, "pointerdown", 220, 55);
+    pointer(knob, "pointermove", 320, 155);
+    expect(getElement(state, t.id)!.rotation).toBeCloseTo(90);
+  });
+
+  it("the '×' removes the text", () => {
+    const { stage, state, addText, overlay, frame, callbacks } = setup();
+    const t = addText(0, TEXT_BOX);
+    selectElement(state, t.id);
+    overlay.sync(state);
+    frame().querySelector<HTMLElement>(".frame-remove")!.click();
+    expect(callbacks.remove).toHaveBeenCalledWith(t.id);
+    expect(spans(stage)).toHaveLength(0);
+  });
+
+  it("double-click on the text (or its frame) opens the inline editor in its place, rotated with it", () => {
+    const { stage, state, addText, overlay, frame, callbacks } = setup();
+    const t = addText(0, { ...TEXT_BOX, rotation: 30 });
+    spans(stage)[0].dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    expect(callbacks.editPlaceDate).toHaveBeenCalledWith(t.id);
+    expect(state.editingElementId).toBe(t.id);
+    expect(editor(stage).hidden).toBe(false);
+    expect(editor(stage).style.transform).toBe("rotate(30deg)");
+    expect(parseFloat(editor(stage).style.fontSize)).toBeCloseTo(11);
+    expect(placeInput(stage).value).toBe("München");
+    expect(dateInput(stage).value).toBe("2026-10-17");
+    expect(document.activeElement).toBe(placeInput(stage));
+    // The text and its frame make room for the inputs.
+    expect(spans(stage)[0].style.visibility).toBe("hidden");
+    expect(frame().hidden).toBe(true);
+
+    callbacks.cancelPlaceDate(t.id);
+    expect(editor(stage).hidden).toBe(true);
+    selectElement(state, t.id);
+    overlay.sync(state);
+    frame().dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    expect(state.editingElementId).toBe(t.id);
+  });
+
+  it("Enter commits the edited parts", () => {
+    const { stage, state, addText, callbacks } = setup();
+    const t = addText(0, TEXT_BOX);
+    callbacks.editPlaceDate(t.id);
+    placeInput(stage).value = "Berlin";
+    dateInput(stage).value = "2026-11-01";
+    key(placeInput(stage), "Enter");
+    expect(callbacks.commitPlaceDate).toHaveBeenCalledWith(t.id, "Berlin", "01.11.2026");
+    expect(editor(stage).hidden).toBe(true);
+    expect(spans(stage)[0].textContent).toBe("Berlin, 01.11.2026");
+    expect(spans(stage)[0].style.visibility).toBe("");
+    expect(state.editingElementId).toBeNull();
+  });
+
+  it("a pointerdown outside commits; one inside does not", () => {
+    const { stage, container, addText, callbacks } = setup();
+    const t = addText(0, TEXT_BOX);
+    callbacks.editPlaceDate(t.id);
+    pointer(dateInput(stage), "pointerdown", 0, 0);
+    expect(callbacks.commitPlaceDate).not.toHaveBeenCalled();
+    expect(callbacks.select).not.toHaveBeenCalled();
+    placeInput(stage).value = "Hamburg";
+    pointer(container, "pointerdown", 0, 0);
+    expect(callbacks.commitPlaceDate).toHaveBeenCalledTimes(1);
+    expect(callbacks.commitPlaceDate).toHaveBeenCalledWith(t.id, "Hamburg", "17.10.2026");
+  });
+
+  it("Esc cancels: the text keeps its values", () => {
+    const { stage, addText, callbacks } = setup();
+    const t = addText(0, TEXT_BOX, "", "17.10.2026");
+    callbacks.editPlaceDate(t.id);
+    placeInput(stage).value = "Mü";
+    key(placeInput(stage), "Escape");
+    expect(callbacks.cancelPlaceDate).toHaveBeenCalledWith(t.id);
+    expect(callbacks.commitPlaceDate).not.toHaveBeenCalled();
+    expect(spans(stage)[0].textContent).toBe("17.10.2026");
+    // Once closed, a click elsewhere commits nothing.
+    pointer(document.body, "pointerdown", 0, 0);
+    expect(callbacks.commitPlaceDate).not.toHaveBeenCalled();
+  });
+
+  it("a cleared date commits as empty", () => {
+    const { stage, addText, callbacks } = setup();
+    const t = addText(0, TEXT_BOX);
+    callbacks.editPlaceDate(t.id);
+    dateInput(stage).value = "";
+    key(dateInput(stage), "Enter");
+    expect(callbacks.commitPlaceDate).toHaveBeenCalledWith(t.id, "München", "");
+  });
+
+  it("closes the editor when the edited text is not on the shown page any more", () => {
+    const { stage, addText, show, callbacks } = setup();
+    const t = addText(0, TEXT_BOX);
+    callbacks.editPlaceDate(t.id);
+    show(1);
+    expect(editor(stage).hidden).toBe(true);
+    expect(callbacks.commitPlaceDate).not.toHaveBeenCalled();
   });
 });

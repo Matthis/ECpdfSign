@@ -5,6 +5,7 @@ import {
   concatTransformationMatrix,
   degrees,
   PDFArray,
+  PDFDict,
   PDFDocument,
   PDFName,
   PDFRawStream,
@@ -12,9 +13,19 @@ import {
   rgb,
 } from "pdf-lib";
 import { afterEach, describe, expect, it } from "vitest";
-import type { SignatureElement, StoredImage } from "../model";
+import type { PlaceDateElement, SignatureElement, StoredImage } from "../model";
+import { formatPlaceDate } from "../placeDate/format";
+import { bundledFont, FONT_BYTES } from "../placeDate/fontFixture.test-data";
+import { textBoxSize } from "../placeDate/metrics";
 import { makePng } from "../signature/pngFixtures.test-data";
-import { boxCorners, boxFromGeometry, boxToGeometry, type Box, type Point } from "../ui/geometry";
+import {
+  boxCorners,
+  boxFromGeometry,
+  boxToGeometry,
+  pdfUnitInPx,
+  type Box,
+  type Point,
+} from "../ui/geometry";
 import { getDocument, OPS, type PDFDocumentProxy } from "./pdfjs";
 import { buildSignedPdf } from "./save";
 import { toViewportPoint, type PageViewport } from "./viewport";
@@ -354,5 +365,175 @@ describe("buildSignedPdf", () => {
       /viewport/,
     );
     expect(source).toEqual(before);
+  });
+});
+
+// Place/date texts: the drawn text box is read back from pdf.js' text content
+// (string, baseline origin and em vectors) and compared with the preview box.
+
+interface TextSpec {
+  cx: number;
+  cy: number;
+  rotation: number;
+  place: string;
+  date: string;
+  fontSize?: number;
+}
+
+/** A text placed where the preview (at `viewport`) shows it, centered at (cx, cy). */
+function placedText(viewport: PageViewport, pageIndex: number, spec: TextSpec): PlaceDateElement {
+  const fontSize = spec.fontSize ?? 11;
+  const size = textBoxSize(bundledFont().metrics, formatPlaceDate(spec.place, spec.date), fontSize);
+  const px = pdfUnitInPx(viewport);
+  const box: Box = {
+    cx: spec.cx,
+    cy: spec.cy,
+    width: size.width * px,
+    height: size.height * px,
+    rotation: spec.rotation,
+  };
+  return {
+    id: `el-${nextId++}`,
+    kind: "placeDate",
+    pageIndex,
+    place: spec.place,
+    date: spec.date,
+    fontSize,
+    ...boxToGeometry(viewport, box),
+  };
+}
+
+interface TextItemLike {
+  str: string;
+  transform: number[];
+  width: number;
+}
+
+async function textItems(doc: PDFDocumentProxy, pageIndex: number): Promise<TextItemLike[]> {
+  const content = await (await doc.getPage(pageIndex + 1)).getTextContent();
+  return content.items.flatMap((item) => ("str" in item && item.str !== "" ? [item] : []));
+}
+
+/**
+ * Screen corners (nw, ne, se, sw) of a drawn text: from the baseline origin
+ * along the em vectors, ascender up and descender down, as wide as the
+ * font's advances.
+ */
+function textScreenCorners(viewport: PageViewport, item: TextItemLike, text: string): Point[] {
+  const { metrics } = bundledFont();
+  const [a, b, c, d, e, f] = item.transform;
+  const at = (u: number, v: number) =>
+    toViewportPoint(viewport, { x: e + a * u + c * v, y: f + b * u + d * v });
+  const w = metrics.advance(text);
+  return [at(0, metrics.ascent), at(w, metrics.ascent), at(w, metrics.descent), at(0, metrics.descent)];
+}
+
+async function textRoundTrip(pages: PageSpec[], textsPerPage: TextSpec[][]) {
+  const source = await makeSource(pages);
+  const before = source.slice();
+  const sourceDoc = await openWithPdfjs(source);
+  const preview = await viewports(sourceDoc, PREVIEW_SCALE);
+  const elements = textsPerPage.flatMap((specs, pageIndex) =>
+    specs.map((spec) => placedText(preview.get(pageIndex)!, pageIndex, spec)),
+  );
+
+  const saved = await buildSignedPdf(source, elements, IMAGES, await viewports(sourceDoc, 1), FONT_BYTES);
+
+  expect(source).toEqual(before);
+  const savedDoc = await openWithPdfjs(saved);
+  for (let pageIndex = 0; pageIndex < pages.length; pageIndex++) {
+    const onPage = elements.filter((e) => e.pageIndex === pageIndex);
+    const items = await textItems(savedDoc, pageIndex);
+    const savedViewport = (await savedDoc.getPage(pageIndex + 1)).getViewport({ scale: PREVIEW_SCALE });
+    for (const element of onPage) {
+      const text = formatPlaceDate(element.place, element.date);
+      const matching = items.filter((item) => item.str === text);
+      expect(matching, text).toHaveLength(1);
+      const [item] = matching;
+      // The em vectors carry the font size: 1 pt of text space is 1 PDF unit here.
+      expect(Math.hypot(item.transform[2], item.transform[3])).toBeCloseTo(element.fontSize, 6);
+      expect(item.width).toBeCloseTo(bundledFont().metrics.advance(text) * element.fontSize, 3);
+      const expected = boxCorners(boxFromGeometry(preview.get(pageIndex)!, element));
+      expectCornersClose(textScreenCorners(savedViewport, item, text), expected);
+    }
+  }
+  return { saved, elements };
+}
+
+/** Font descriptors in a saved PDF (one per embedded font). */
+async function fontDescriptors(bytes: Uint8Array): Promise<number> {
+  const doc = await PDFDocument.load(bytes, { updateMetadata: false });
+  return doc.context
+    .enumerateIndirectObjects()
+    .filter(([, obj]) => obj instanceof PDFDict && obj.get(PDFName.of("Type")) === PDFName.of("FontDescriptor"))
+    .length;
+}
+
+describe("buildSignedPdf with place/date texts", () => {
+  it("draws texts on a /Rotate 90 page and rotated by 30° at the preview's corners", async () => {
+    await textRoundTrip(
+      [{ rotate: 90, crop: [37, 61, 480, 700] }],
+      [[
+        { cx: 300, cy: 200, rotation: 0, place: "München", date: "17.10.2026" },
+        { cx: 500, cy: 450, rotation: 30, place: "Łódź", date: "01.11.2026", fontSize: 17.5 },
+      ]],
+    );
+  });
+
+  it("matches the preview on /Rotate 0, 180 and 270 pages and after a CTM the page leaves behind", async () => {
+    const texts: TextSpec[] = [
+      { cx: 200, cy: 150, rotation: 0, place: "Ærøskøbing", date: "" },
+      { cx: 380, cy: 600, rotation: 247.5, place: "", date: "17.10.2026", fontSize: 6 },
+      { cx: 250, cy: 380, rotation: 30, place: "Zürich", date: "31.12.2026", fontSize: 24 },
+    ];
+    await textRoundTrip(
+      [
+        { rotate: 0, leaveCtm: true },
+        { rotate: 180, crop: [11, 13, 560, 800] },
+        { rotate: 270, crop: [45, 25, 520, 790], leaveCtm: true },
+      ],
+      [texts, texts, texts],
+    );
+  });
+
+  it("extracts exactly the shown string, with no ligatures", async () => {
+    // "ffi" would become one ligature glyph with Noto Sans' default shaping.
+    const { saved } = await textRoundTrip(
+      [{ rotate: 0 }],
+      [[{ cx: 300, cy: 300, rotation: 0, place: "Waffingen", date: "02.03.2026" }]],
+    );
+    const page = await (await openWithPdfjs(saved)).getPage(1);
+    const { fnArray, argsArray } = await page.getOperatorList();
+    const shown = fnArray.flatMap((fn, i) =>
+      fn === OPS.showText ? [(argsArray[i] as [unknown[]])[0].length] : [],
+    );
+    expect(shown).toEqual(["Waffingen, 02.03.2026".length]);
+  });
+
+  it("embeds the font once for texts on several pages, next to signatures", async () => {
+    const source = await makeSource([{ rotate: 0 }, { rotate: 90 }]);
+    const sourceDoc = await openWithPdfjs(source);
+    const vps = await viewports(sourceDoc, 1);
+    const elements = [
+      placed(vps.get(0)!, 0, { cx: 200, cy: 200, width: 150, height: 50, rotation: 0 }),
+      placedText(vps.get(0)!, 0, { cx: 200, cy: 300, rotation: 0, place: "München", date: "17.10.2026" }),
+      placedText(vps.get(1)!, 1, { cx: 300, cy: 200, rotation: 10, place: "Berlin", date: "" }),
+    ];
+    const saved = await buildSignedPdf(source, elements, IMAGES, vps, FONT_BYTES);
+    expect(await fontDescriptors(saved)).toBe(1);
+    // A subset, not the whole 400 KB font file.
+    expect(saved.byteLength).toBeLessThan(source.byteLength + 100_000);
+    const savedDoc = await openWithPdfjs(saved);
+    expect((await textItems(savedDoc, 0)).map((i) => i.str)).toEqual(["München, 17.10.2026"]);
+    expect((await textItems(savedDoc, 1)).map((i) => i.str)).toEqual(["Berlin"]);
+    expect(await drawnImages(savedDoc, 0)).toHaveLength(1);
+  });
+
+  it("refuses texts without the font", async () => {
+    const source = await makeSource([{ rotate: 0 }]);
+    const sourceDoc = await openWithPdfjs(source);
+    const vp = (await viewports(sourceDoc, 1)).get(0)!;
+    const text = placedText(vp, 0, { cx: 100, cy: 100, rotation: 0, place: "A", date: "" });
+    await expect(buildSignedPdf(source, [text], IMAGES, new Map([[0, vp]]))).rejects.toThrow(/font/);
   });
 });

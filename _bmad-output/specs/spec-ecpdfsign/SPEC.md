@@ -38,10 +38,11 @@ A vision with a privacy pain behind it: people who need to put their handwritten
       - a double-click resets it to 0°.
     - Twenty signatures across several pages can coexist.
 - **CAP-4**
-  - **intent:** User can optionally add any number of place/date texts in the format "<place>, <date>" (e.g. "München, 17.10.2026"). The date is DD.MM.YYYY, prefilled with today, and can be edited; the place is free text. Either part can be left out. Each text is placed like a signature, with the same active frame and "×": by default beside or below the selected signature, or centered on the current page if no signature is placed. Resizing changes the font size and never stretches the glyphs.
+  - **intent:** User can optionally add any number of place/date texts in the format "<place>, <date>" (e.g. "München, 17.10.2026"). Place and date are edited directly on the page; the date is chosen from a calendar, prefilled with today and shown as DD.MM.YYYY; the place is free text. Either part can be left out. Each text is placed and rotated like a signature, with the same active frame, rotation handle and "×": by default beside or below the selected signature, or centered on the current page if no signature is placed. Resizing changes the font size and never stretches the glyphs.
   - **success:**
     - With no edits, today's date appears next to or below the signature, or centered if there is none.
-    - Several texts can be placed, moved, and resized independently, without distorted glyphs.
+    - Several texts can be placed, moved, resized and rotated independently, without distorted glyphs.
+    - A text is edited directly on the page; a double-click reopens it, and the date comes from a calendar.
     - Clearing the place yields only the date; clearing the date yields only the place.
 - **CAP-5**
   - **intent:** User saves the result as a new PDF; the save dialog suggests "<Name>_signiert.pdf". The original stays unchanged unless the user actively changes the name back to the original file and confirms the overwrite.
@@ -97,6 +98,3 @@ A vision with a privacy pain behind it: people who need to put their handwritten
   - The original file is byte-identical.
   - No network traffic occurred.
 
-## Open Questions
-
-- Can place/date texts be rotated like signatures? Decide in story 6.

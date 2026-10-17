@@ -106,5 +106,7 @@ export default defineConfig(() => ({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // Let tests read styles.css (?raw); vitest blanks CSS files by default.
+    css: { include: [/src\/styles\.css/] },
   },
 }));

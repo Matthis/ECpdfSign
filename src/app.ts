@@ -37,7 +37,16 @@ export const MESSAGES = {
   buildFailed: "Die PDF-Datei konnte nicht erstellt werden.",
   saveFailed:
     "Die Datei konnte nicht gespeichert werden. Ist sie in einem anderen Programm geöffnet oder schreibgeschützt?",
+  /** Info notice right after opening a digitally signed PDF. */
+  signedPdf: "Dieses PDF ist digital signiert. Beim Speichern werden die Signaturen ungültig.",
 } as const;
+
+/** Text of the warning before saving a PDF with `count` (≥ 1) digital signatures. */
+export function signatureWarning(count: number): string {
+  return count === 1
+    ? "Dieses PDF enthält 1 digitale Signatur. Beim Speichern wird sie ungültig."
+    : `Dieses PDF enthält ${count} digitale Signaturen. Beim Speichern werden sie ungültig.`;
+}
 
 /** Info message after a successful save. */
 export function savedMessage(fileName: string): string {
@@ -66,6 +75,12 @@ export interface AppDeps {
   savePdf(bytes: Uint8Array): Promise<string | null>;
   /** Asks "Platzierte Elemente verwerfen?"; resolves `true` for "Verwerfen". */
   confirmDiscard(): Promise<boolean>;
+  /**
+   * Warns that saving invalidates the PDF's `count` digital signatures (see
+   * `signatureWarning`); resolves `true` for "Trotzdem speichern", `false`
+   * for "Abbrechen" or Esc.
+   */
+  confirmInvalidateSignatures(count: number): Promise<boolean>;
   toolbar: {
     setEnabled(action: ToolbarAction, enabled: boolean): void;
     setDocumentName(name: string | null): void;
@@ -112,7 +127,9 @@ export interface App {
   /**
    * Builds the signed PDF from the unchanged source bytes and every placed
    * element, then hands it to the backend's save dialog. The placed elements
-   * stay as they are and can be saved again.
+   * stay as they are and can be saved again. If the PDF is digitally signed,
+   * it first warns that saving invalidates the signatures (once per opened
+   * document); "Abbrechen" changes nothing.
    */
   save(): Promise<void>;
   /** Handles a keyboard shortcut; returns `true` if it did something. */
@@ -137,6 +154,11 @@ export function createApp(deps: AppDeps): App {
       deps.messages.show(text);
     },
     info(text: string): void {
+      savedNoticeShown = false;
+      deps.messages.info(text);
+    },
+    /** The "Gespeichert" notice, which goes stale on the next element change. */
+    saved(text: string): void {
       savedNoticeShown = true;
       deps.messages.info(text);
     },
@@ -249,11 +271,15 @@ export function createApp(deps: AppDeps): App {
       }
 
       const previous = current;
-      current = { pdf, state: createDocumentState(picked.name, picked.bytes, pdf.pageCount) };
+      current = {
+        pdf,
+        state: createDocumentState(picked.name, picked.bytes, pdf.pageCount, pdf.signedSignatureCount),
+      };
       deps.toolbar.setDocumentName(picked.name);
       deps.thumbnails.setDocument(pdf.proxy, 0);
       deps.pageView.setDocument(pdf.proxy, 0);
       changed();
+      if (pdf.signedSignatureCount > 0) messages.info(MESSAGES.signedPdf);
       // The views no longer reference the old document; free its worker resources.
       if (previous) await previous.pdf.destroy().catch(() => undefined);
     } finally {
@@ -358,9 +384,28 @@ export function createApp(deps: AppDeps): App {
     saving = true;
     refreshToolbar();
     deps.toolbar.setEnabled("open", false);
-    deps.setBusy?.(true);
-    messages.hide();
     try {
+      // Rewriting the file invalidates existing digital signatures: ask first,
+      // before anything is built or the save dialog opens. Asked once per
+      // opened document; after "Abbrechen" the next save asks again.
+      if (doc.state.signedSignatureCount > 0 && !doc.state.signatureWarningAccepted) {
+        confirming = true;
+        let proceed: boolean;
+        try {
+          proceed = await deps.confirmInvalidateSignatures(doc.state.signedSignatureCount);
+        } catch (error) {
+          log.error("signature warning failed", error);
+          proceed = false;
+        } finally {
+          confirming = false;
+        }
+        if (!proceed) return; // "Abbrechen": nothing built or written, no message
+        doc.state.signatureWarningAccepted = true;
+      }
+
+      deps.setBusy?.(true);
+      messages.hide();
+
       // Saved as they are now, even if they change while the file is built.
       const elements = doc.state.elements.map((e) => ({ ...e, rect: { ...e.rect } }));
       const images = new Map(doc.state.images);
@@ -389,7 +434,7 @@ export function createApp(deps: AppDeps): App {
         return;
       }
       if (savedName === null) return; // dialog cancelled: nothing written, no message
-      messages.info(savedMessage(savedName));
+      messages.saved(savedMessage(savedName));
     } finally {
       saving = false;
       deps.setBusy?.(false);

@@ -25,3 +25,6 @@
 - source_spec: `_bmad-output/specs/spec-ecpdfsign/stories/3-save-as-new-pdf.md`
   summary: `save_pdf` accepts only `InvokeBody::Raw`; under Tauri's postMessage IPC fallback the body arrives as JSON and every save fails with `invalid-body` (severity medium, unverified).
   evidence: To settle it, check whether the fallback can trigger in the shipped app (WebView2 or WKWebView with the strict CSP). If it can, also accept a JSON number array.
+- source_spec: `_bmad-output/specs/spec-ecpdfsign/stories/4-warn-before-invalidating-existing-digital-signatures.md`
+  summary: Test that `main.ts` wires `confirmInvalidateSignatures` to `#signatures-dialog` with `signatureWarning(count)` (e.g. via an extracted `wireDialogs` helper).
+  evidence: `confirmInvalidateSignatures: () => discardDialog.ask()` type-checks and every test stays green, yet the warning would ask "Platzierte Elemente verwerfen?".

@@ -3,12 +3,13 @@
 
 import { PDFDocument } from "pdf-lib";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createApp, MESSAGES, savedMessage, type AppDeps } from "./app";
+import { createApp, MESSAGES, savedMessage, signatureWarning, type AppDeps } from "./app";
 import type { OpenedPdf } from "./backend";
 import { loadPdfDocument, type LoadedPdf } from "./pdf/document";
 import { OWNER_PASSWORD_ONLY_PDF, USER_PASSWORD_PDF } from "./pdf/encryptedFixtures.test-data";
 import { getDocument, OPS } from "./pdf/pdfjs";
 import { buildSignedPdf } from "./pdf/save";
+import { makeMalformedFormPdf, makeSignedPdf } from "./pdf/signatureFixtures.test-data";
 import { encodePng, makeAnimatedPng, makePng } from "./signature/pngFixtures.test-data";
 import type { ShownPage } from "./ui/pageView";
 
@@ -50,6 +51,7 @@ function setup() {
     buildSignedPdf: vi.fn(buildSignedPdf),
     savePdf: vi.fn(async (_bytes: Uint8Array): Promise<string | null> => "vertrag_signiert.pdf"),
     confirmDiscard: vi.fn(async () => true),
+    confirmInvalidateSignatures: vi.fn(async (_count: number) => true),
     toolbar: { setEnabled: vi.fn(), setDocumentName: vi.fn() },
     pageView: {
       setDocument: vi.fn(),
@@ -947,4 +949,211 @@ describe("matrix: PNG not embeddable", () => {
       expect(enabled("save")).toBe(false);
     });
   }
+});
+
+describe("story 4: digitally signed PDFs", () => {
+  async function withSignedDocument(fields: Parameters<typeof makeSignedPdf>[0] = [{}]) {
+    const ctx = setup();
+    await ctx.open("signiert.pdf", await makeSignedPdf(fields));
+    await ctx.insert(PNG);
+    return ctx;
+  }
+
+  describe("matrix: Signed PDF, continue", () => {
+    it("warns with the count before building, then builds and opens the save dialog", async () => {
+      const { app, deps } = await withSignedDocument();
+      expect(app.getDocument()!.state.signedSignatureCount).toBe(1);
+      await app.save();
+      expect(deps.confirmInvalidateSignatures).toHaveBeenCalledExactlyOnceWith(1);
+      expect(deps.confirmInvalidateSignatures.mock.invocationCallOrder[0]).toBeLessThan(
+        deps.buildSignedPdf.mock.invocationCallOrder[0],
+      );
+      expect(deps.savePdf).toHaveBeenCalledTimes(1);
+      expect(deps.messages.info).toHaveBeenLastCalledWith("Gespeichert: vertrag_signiert.pdf");
+    });
+  });
+
+  describe("matrix: Signed PDF, cancel", () => {
+    it("'Abbrechen' / Esc: nothing built, no save dialog, no message, placements kept", async () => {
+      const { app, deps, enabled } = await withSignedDocument();
+      const elementsBefore = structuredClone(app.getDocument()!.state.elements);
+      clearCalls(deps);
+      deps.setBusy.mockClear();
+      deps.confirmInvalidateSignatures.mockResolvedValueOnce(false);
+      await app.save();
+      expect(deps.setBusy).not.toHaveBeenCalledWith(true);
+      expect(deps.confirmInvalidateSignatures).toHaveBeenCalledTimes(1);
+      expect(deps.buildSignedPdf).not.toHaveBeenCalled();
+      expect(deps.savePdf).not.toHaveBeenCalled();
+      expect(deps.messages.show).not.toHaveBeenCalled();
+      expect(deps.messages.info).not.toHaveBeenCalled();
+      expect(deps.messages.hide).not.toHaveBeenCalled();
+      expect(app.getDocument()!.state.elements).toEqual(elementsBefore);
+      expect(enabled("save")).toBe(true);
+      expect(enabled("open")).toBe(true);
+    });
+
+    it("a failing question counts as 'Abbrechen' and is logged", async () => {
+      const { app, deps } = await withSignedDocument();
+      deps.confirmInvalidateSignatures.mockRejectedValueOnce(new Error("dialog"));
+      await app.save();
+      expect(deps.buildSignedPdf).not.toHaveBeenCalled();
+      expect(deps.savePdf).not.toHaveBeenCalled();
+      expect(deps.log.error).toHaveBeenCalledWith("signature warning failed", expect.anything());
+    });
+
+    it("blocks shortcuts, a second save and opening while the warning is open", async () => {
+      const { app, deps, enabled } = await withSignedDocument();
+      let answer!: (proceed: boolean) => void;
+      deps.confirmInvalidateSignatures.mockImplementationOnce(
+        () => new Promise((resolve) => (answer = resolve)),
+      );
+      deps.setBusy.mockClear();
+      const pending = app.save();
+      expect(enabled("save")).toBe(false);
+      expect(app.handleShortcut("removeElement")).toBe(false);
+      await app.save();
+      await app.openPdf();
+      expect(deps.confirmInvalidateSignatures).toHaveBeenCalledTimes(1);
+      expect(deps.pickPdf).toHaveBeenCalledTimes(1); // only the initial open
+      expect(deps.setBusy).not.toHaveBeenCalledWith(true);
+      answer(false);
+      await pending;
+      expect(app.getDocument()!.state.elements).toHaveLength(1);
+      expect(enabled("save")).toBe(true);
+    });
+  });
+
+  describe("matrix: Unsigned PDF / Empty signature field", () => {
+    it("an unsigned PDF saves without a warning", async () => {
+      const { app, deps, insert } = await withDocument();
+      await insert(PNG);
+      await app.save();
+      expect(deps.confirmInvalidateSignatures).not.toHaveBeenCalled();
+      expect(deps.savePdf).toHaveBeenCalledTimes(1);
+    });
+
+    it("a PDF with only an empty signature field saves without a warning", async () => {
+      const { app, deps } = await withSignedDocument([{ signed: false }]);
+      expect(app.getDocument()!.state.signedSignatureCount).toBe(0);
+      await app.save();
+      expect(deps.confirmInvalidateSignatures).not.toHaveBeenCalled();
+      expect(deps.savePdf).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("matrix: Nested field / Several signatures", () => {
+    it("detects a signed field nested in a parent's /Kids", async () => {
+      const { app, deps } = await withSignedDocument([{ layout: "nested" }]);
+      await app.save();
+      expect(deps.confirmInvalidateSignatures).toHaveBeenCalledWith(1);
+    });
+
+    it("passes a count of 2, shown as '2 digitale Signaturen'", async () => {
+      const { app, deps } = await withSignedDocument([{}, {}]);
+      await app.save();
+      expect(deps.confirmInvalidateSignatures).toHaveBeenCalledWith(2);
+      expect(signatureWarning(2)).toContain("2 digitale Signaturen");
+    });
+  });
+
+  describe("matrix: Second save / Ask again after cancel", () => {
+    it("asks only once after 'Trotzdem speichern', even if that save was cancelled or failed", async () => {
+      const { app, deps } = await withSignedDocument();
+      deps.savePdf.mockResolvedValueOnce(null); // save dialog cancelled
+      await app.save();
+      deps.savePdf.mockRejectedValueOnce("os error"); // write failed
+      await app.save();
+      await app.save();
+      expect(deps.confirmInvalidateSignatures).toHaveBeenCalledTimes(1);
+      expect(deps.savePdf).toHaveBeenCalledTimes(3);
+    });
+
+    it("does not ask again after 'Trotzdem speichern' when building that save failed", async () => {
+      const { app, deps } = await withSignedDocument();
+      deps.buildSignedPdf.mockRejectedValueOnce(new Error("pdf-lib"));
+      await app.save();
+      expect(deps.messages.show).toHaveBeenCalledWith(MESSAGES.buildFailed);
+      expect(deps.savePdf).not.toHaveBeenCalled();
+      await app.save();
+      expect(deps.confirmInvalidateSignatures).toHaveBeenCalledTimes(1);
+      expect(deps.savePdf).toHaveBeenCalledTimes(1);
+    });
+
+    it("asks again after 'Abbrechen'", async () => {
+      const { app, deps } = await withSignedDocument();
+      deps.confirmInvalidateSignatures.mockResolvedValueOnce(false);
+      await app.save();
+      await app.save();
+      expect(deps.confirmInvalidateSignatures).toHaveBeenCalledTimes(2);
+      expect(deps.savePdf).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("matrix: Reopen", () => {
+    it("opening a signed PDF again (same file or another) warns again on the next save", async () => {
+      const { app, deps, open, insert } = await withSignedDocument();
+      await app.save();
+      expect(deps.confirmInvalidateSignatures).toHaveBeenCalledTimes(1);
+
+      await open("signiert.pdf", await makeSignedPdf([{}])); // the same file again
+      await insert(PNG);
+      await app.save();
+      expect(deps.confirmInvalidateSignatures).toHaveBeenCalledTimes(2);
+
+      await open("anderes.pdf", await makeSignedPdf([{}, {}]));
+      await insert(PNG);
+      await app.save();
+      expect(deps.confirmInvalidateSignatures).toHaveBeenCalledTimes(3);
+      expect(deps.confirmInvalidateSignatures).toHaveBeenLastCalledWith(2);
+    });
+  });
+
+  describe("matrix: Open notice / Open unsigned", () => {
+    it("shows the info notice right after opening a signed PDF", async () => {
+      const { deps, open } = setup();
+      await open("signiert.pdf", await makeSignedPdf([{}]));
+      expect(deps.messages.info).toHaveBeenCalledExactlyOnceWith(MESSAGES.signedPdf);
+      expect(MESSAGES.signedPdf).toBe(
+        "Dieses PDF ist digital signiert. Beim Speichern werden die Signaturen ungültig.",
+      );
+      expect(deps.messages.show).not.toHaveBeenCalled();
+    });
+
+    it("shows no notice for an unsigned PDF", async () => {
+      const { deps } = await withDocument();
+      expect(deps.messages.info).not.toHaveBeenCalled();
+    });
+
+    it("is replaced when another, unsigned PDF is opened", async () => {
+      const { deps, open } = setup();
+      await open("signiert.pdf", await makeSignedPdf([{}]));
+      clearCalls(deps);
+      await open("vertrag.pdf", await makePdf(1));
+      expect(deps.messages.hide).toHaveBeenCalled();
+      expect(deps.messages.info).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("matrix: Malformed AcroForm", () => {
+    for (const kind of ["fieldsNotArray", "cycle", "brokenRef"] as const) {
+      it(`opens (${kind}) with count 0 and no message, logs, and saves without a warning`, async () => {
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        try {
+          const { app, deps, open, insert } = setup();
+          await open("kaputt.pdf", await makeMalformedFormPdf(kind));
+          expect(app.getDocument()?.state.signedSignatureCount).toBe(0);
+          expect(consoleError).toHaveBeenCalled();
+          expect(deps.messages.show).not.toHaveBeenCalled();
+          expect(deps.messages.info).not.toHaveBeenCalled();
+          await insert(PNG);
+          await app.save();
+          expect(deps.confirmInvalidateSignatures).not.toHaveBeenCalled();
+          expect(deps.savePdf).toHaveBeenCalledTimes(1);
+        } finally {
+          consoleError.mockRestore();
+        }
+      });
+    }
+  });
 });

@@ -1,6 +1,6 @@
 // Thin wiring of the real backend, pdf.js and DOM views into the app flow (src/app.ts).
 
-import { createApp, type App } from "./app";
+import { createApp, signatureWarning, type App } from "./app";
 import { acceptOpenedPdf, pickPdf, pickSignaturePng, savePdf } from "./backend";
 import { loadPdfDocument } from "./pdf/document";
 import { buildSignedPdf } from "./pdf/save";
@@ -45,6 +45,7 @@ const overlay = createOverlay(pageStage, pageViewElement, {
 });
 pageView.onViewportShown((shown) => overlay.setShownPage(shown));
 const discardDialog = createConfirmDialog(byId<HTMLDialogElement>("discard-dialog"));
+const signaturesDialog = createConfirmDialog(byId<HTMLDialogElement>("signatures-dialog"));
 
 app = createApp({
   pickPdf,
@@ -55,6 +56,7 @@ app = createApp({
   buildSignedPdf,
   savePdf,
   confirmDiscard: () => discardDialog.ask(),
+  confirmInvalidateSignatures: (count) => signaturesDialog.ask(signatureWarning(count)),
   toolbar,
   pageView,
   thumbnails,

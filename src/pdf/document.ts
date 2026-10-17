@@ -3,6 +3,7 @@
 
 import { PDFDocument } from "pdf-lib";
 import { getDocument, PasswordException, type PDFDocumentProxy } from "./pdfjs";
+import { countSignedSignatureFields } from "./signatures";
 
 export type PdfjsLoadOptions = Omit<
   NonNullable<Parameters<typeof getDocument>[0]>,
@@ -50,6 +51,11 @@ export function classifyLoadError(error: unknown): PdfLoadErrorKind {
 export interface LoadedPdf {
   readonly proxy: PDFDocumentProxy;
   readonly pageCount: number;
+  /**
+   * Signed signature fields found at open (see pdf/signatures.ts). Saving
+   * rewrites the file and invalidates them. 0 if the form could not be read.
+   */
+  readonly signedSignatureCount: number;
   /** Releases the pdf.js worker resources of this document. */
   destroy(): Promise<void>;
 }
@@ -73,7 +79,7 @@ export function configurePdfLoading(options: PdfjsLoadOptions): void {
 
 /** What pdf-lib, which writes the signed copy, makes of the file. */
 type PdfLibCheck =
-  | { status: "ok"; pageCount: number }
+  | { status: "ok"; pageCount: number; signedSignatureCount: number }
   | { status: "encrypted" }
   | { status: "unloadable"; error: unknown };
 
@@ -95,7 +101,12 @@ async function checkWithPdfLib(bytes: Uint8Array): Promise<PdfLibCheck> {
       updateMetadata: false,
     });
     if (doc.isEncrypted) return { status: "encrypted" };
-    return { status: "ok", pageCount: doc.getPageCount() };
+    // Detected once here, on the copy that is loaded anyway; a malformed form
+    // must not stop the file from opening, so problems are only logged.
+    const signedSignatureCount = countSignedSignatureFields(doc, (problem) =>
+      console.error("signature field detection:", problem),
+    );
+    return { status: "ok", pageCount: doc.getPageCount(), signedSignatureCount };
   } catch (error) {
     return { status: "unloadable", error };
   }
@@ -125,6 +136,7 @@ export async function loadPdfDocument(bytes: Uint8Array): Promise<LoadedPdf> {
   const pdfLib = checkWithPdfLib(bytes);
 
   let proxy: PDFDocumentProxy;
+  let signedSignatureCount: number;
   try {
     proxy = await task.promise;
     if (proxy.numPages < 1) throw new PdfLoadError("invalid");
@@ -136,6 +148,7 @@ export async function loadPdfDocument(bytes: Uint8Array): Promise<LoadedPdf> {
       throw new PdfLoadError("uneditable", { cause: pdfLibResult.error });
     }
     if (pdfLibResult.pageCount !== proxy.numPages) throw new PdfLoadError("uneditable");
+    signedSignatureCount = pdfLibResult.signedSignatureCount;
   } catch (error) {
     await task.destroy().catch(() => undefined);
     // A file pdf.js cannot parse may still be flagged as encrypted by pdf-lib.
@@ -148,6 +161,7 @@ export async function loadPdfDocument(bytes: Uint8Array): Promise<LoadedPdf> {
   return {
     proxy,
     pageCount: proxy.numPages,
+    signedSignatureCount,
     destroy: () => task.destroy(),
   };
 }

@@ -1,8 +1,9 @@
 import { PDFDocument } from "pdf-lib";
 import { InvalidPDFException, PasswordException } from "./pdfjs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { classifyLoadError, loadPdfDocument, PdfLoadError } from "./document";
 import { OWNER_PASSWORD_ONLY_PDF, USER_PASSWORD_PDF } from "./encryptedFixtures.test-data";
+import { makeMalformedFormPdf, makeSignedPdf } from "./signatureFixtures.test-data";
 
 async function makePdf(pageCount: number, options?: { plain?: boolean }): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
@@ -106,4 +107,46 @@ describe("loadPdfDocument", () => {
     const bytes = await makePdf(3);
     await expectRejected(bytes.subarray(0, 40), "invalid");
   });
+});
+
+describe("loadPdfDocument: signed signature fields", () => {
+  async function signedCount(bytes: Uint8Array): Promise<number> {
+    const pdf = await loadPdfDocument(bytes);
+    try {
+      return pdf.signedSignatureCount;
+    } finally {
+      await pdf.destroy();
+    }
+  }
+
+  it("is 0 for an unsigned PDF", async () => {
+    expect(await signedCount(await makePdf(2))).toBe(0);
+  });
+
+  it("is 0 for an empty signature field (no /V)", async () => {
+    expect(await signedCount(await makeSignedPdf([{ signed: false }]))).toBe(0);
+  });
+
+  it("counts signed fields, nested ones included", async () => {
+    expect(await signedCount(await makeSignedPdf([{}]))).toBe(1);
+    expect(await signedCount(await makeSignedPdf([{}, { layout: "nested" }]))).toBe(2);
+  });
+
+  for (const kind of ["fieldsNotArray", "cycle", "brokenRef"] as const) {
+    it(`opens a PDF with a malformed AcroForm (${kind}): count 0, problem logged`, async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      try {
+        const pdf = await loadPdfDocument(await makeMalformedFormPdf(kind));
+        try {
+          expect(pdf.pageCount).toBe(1);
+          expect(pdf.signedSignatureCount).toBe(0);
+        } finally {
+          await pdf.destroy();
+        }
+        expect(error).toHaveBeenCalledWith("signature field detection:", expect.anything());
+      } finally {
+        error.mockRestore();
+      }
+    });
+  }
 });

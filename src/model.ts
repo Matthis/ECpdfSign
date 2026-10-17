@@ -71,12 +71,23 @@ export interface DocumentState {
   images: Map<string, StoredImage>;
   /** Counter behind element and image ids; ids are never reused within a document. */
   nextId: number;
+  /**
+   * Signed signature fields found when the PDF was opened. Saving rewrites
+   * the file and invalidates them, so the user is warned first.
+   */
+  signedSignatureCount: number;
+  /**
+   * Whether the user chose "Trotzdem speichern" for this document. It is not
+   * asked again until another document (or the same file again) is opened.
+   */
+  signatureWarningAccepted: boolean;
 }
 
 export function createDocumentState(
   sourceName: string,
   sourceBytes: Uint8Array,
   pageCount: number,
+  signedSignatureCount = 0,
 ): DocumentState {
   if (!Number.isInteger(pageCount) || pageCount < 1) {
     throw new RangeError(`pageCount must be a positive integer, got ${pageCount}`);
@@ -90,6 +101,8 @@ export function createDocumentState(
     selectedElementId: null,
     images: new Map(),
     nextId: 1,
+    signedSignatureCount,
+    signatureWarningAccepted: false,
   };
 }
 

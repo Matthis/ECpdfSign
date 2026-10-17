@@ -20,6 +20,14 @@ describe("document state", () => {
     expect(state.selectedElementId).toBeNull();
     expect(state.images.size).toBe(0);
     expect(state.pageCount).toBe(10);
+    expect(state.signedSignatureCount).toBe(0);
+    expect(state.signatureWarningAccepted).toBe(false);
+  });
+
+  it("stores the signed signature count of the opened PDF, not yet accepted", () => {
+    const state = createDocumentState("a.pdf", new Uint8Array([1]), 1, 2);
+    expect(state.signedSignatureCount).toBe(2);
+    expect(state.signatureWarningAccepted).toBe(false);
   });
 
   it("refuses documents without pages", () => {

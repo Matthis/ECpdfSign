@@ -1,4 +1,4 @@
-// Application flow: opening a PDF, selecting pages and placing signatures.
+// Application flow: opening a PDF, selecting pages, placing signatures and saving.
 // DOM-free so it can be unit-tested with fakes; src/main.ts wires it to the
 // real backend and views.
 
@@ -14,10 +14,13 @@ import {
   selectElement as selectInModel,
   updateElementGeometry,
   type DocumentState,
+  type PlacedElement,
+  type StoredImage,
 } from "./model";
 import { classifyLoadError, type LoadedPdf } from "./pdf/document";
 import type { PDFDocumentProxy } from "./pdf/pdfjs";
 import type { PageViewport } from "./pdf/viewport";
+import { checkPngEmbeddable } from "./signature/pdfEmbed";
 import { readPngInfo } from "./signature/png";
 import { boxToGeometry, defaultPlacement, type ElementGeometry } from "./ui/geometry";
 import type { Shortcut } from "./ui/keyboard";
@@ -30,7 +33,16 @@ export const MESSAGES = {
   invalid: "Die Datei konnte nicht als PDF geöffnet werden.",
   readFailed: "Die Datei konnte nicht gelesen werden.",
   invalidPng: "Die Datei konnte nicht als PNG-Bild geladen werden.",
+  uneditable: "Diese PDF-Datei kann nicht bearbeitet werden.",
+  buildFailed: "Die PDF-Datei konnte nicht erstellt werden.",
+  saveFailed:
+    "Die Datei konnte nicht gespeichert werden. Ist sie in einem anderen Programm geöffnet oder schreibgeschützt?",
 } as const;
+
+/** Info message after a successful save. */
+export function savedMessage(fileName: string): string {
+  return `Gespeichert: ${fileName}`;
+}
 
 export interface AppDeps {
   pickPdf(): Promise<OpenedPdf | null>;
@@ -43,6 +55,15 @@ export interface AppDeps {
    * app lets the webview decode it); rejects if the image cannot be shown.
    */
   decodePng?(bytes: Uint8Array): Promise<void>;
+  /** Builds the signed copy (see pdf/save.ts); `pageViewports` holds a scale-1 viewport per used page. */
+  buildSignedPdf(
+    sourceBytes: Uint8Array,
+    elements: readonly PlacedElement[],
+    images: ReadonlyMap<string, StoredImage>,
+    pageViewports: ReadonlyMap<number, PageViewport>,
+  ): Promise<Uint8Array>;
+  /** Native save dialog plus write; resolves to the saved file name, or `null` if cancelled. */
+  savePdf(bytes: Uint8Array): Promise<string | null>;
   /** Asks "Platzierte Elemente verwerfen?"; resolves `true` for "Verwerfen". */
   confirmDiscard(): Promise<boolean>;
   toolbar: {
@@ -62,7 +83,8 @@ export interface AppDeps {
   };
   /** Contract: `sync` redraws the placed elements from the model; a new state object means a new document. */
   overlay: { sync(state: DocumentState | null): void };
-  messages: { show(text: string): void; hide(): void };
+  /** `show` is an error, `info` a neutral notice (e.g. after saving). */
+  messages: { show(text: string): void; info(text: string): void; hide(): void };
   setBusy?(busy: boolean): void;
   log?: Pick<Console, "error" | "warn">;
 }
@@ -87,6 +109,12 @@ export interface App {
   /** Stores new geometry for an element (from the overlay while the user drags). */
   updateElement(id: string, geometry: ElementGeometry): void;
   removeElement(id: string): void;
+  /**
+   * Builds the signed PDF from the unchanged source bytes and every placed
+   * element, then hands it to the backend's save dialog. The placed elements
+   * stay as they are and can be saved again.
+   */
+  save(): Promise<void>;
   /** Handles a keyboard shortcut; returns `true` if it did something. */
   handleShortcut(shortcut: Shortcut): boolean;
   getDocument(): OpenDocument | null;
@@ -98,10 +126,37 @@ export function createApp(deps: AppDeps): App {
   let opening = false;
   let inserting = false;
   let confirming = false;
+  let saving = false;
+  /** Whether the bar shows the "Gespeichert" notice, which goes stale on the next element change. */
+  let savedNoticeShown = false;
 
-  /** While another PDF is being opened, the shown document is about to be discarded: leave it alone. */
+  // Every message goes through here, so `savedNoticeShown` stays accurate.
+  const messages = {
+    show(text: string): void {
+      savedNoticeShown = false;
+      deps.messages.show(text);
+    },
+    info(text: string): void {
+      savedNoticeShown = true;
+      deps.messages.info(text);
+    },
+    hide(): void {
+      savedNoticeShown = false;
+      deps.messages.hide();
+    },
+  };
+
+  /** After an element changed, the document no longer matches the saved file. */
+  function dropSavedNotice(): void {
+    if (savedNoticeShown) messages.hide();
+  }
+
+  /**
+   * While another PDF is being opened, the shown document is about to be
+   * discarded; while it is being saved, it is in use. Leave it alone either way.
+   */
   function editable(): boolean {
-    return !!current && !opening;
+    return !!current && !opening && !saving;
   }
 
   function refreshToolbar(): void {
@@ -109,6 +164,10 @@ export function createApp(deps: AppDeps): App {
     deps.toolbar.setEnabled(
       "removeElement",
       editable() && current!.state.selectedElementId !== null,
+    );
+    deps.toolbar.setEnabled(
+      "save",
+      editable() && !inserting && current!.state.elements.length > 0,
     );
   }
 
@@ -132,7 +191,7 @@ export function createApp(deps: AppDeps): App {
   }
 
   async function openPdf(): Promise<void> {
-    if (opening) return;
+    if (opening || saving) return;
     opening = true;
     refreshToolbar();
     deps.toolbar.setEnabled("open", false);
@@ -158,7 +217,7 @@ export function createApp(deps: AppDeps): App {
   async function pickAndOpen(): Promise<void> {
     deps.setBusy?.(true);
     // A new attempt replaces any earlier error, even if it is then cancelled.
-    deps.messages.hide();
+    messages.hide();
     try {
       let picked: OpenedPdf | null;
       try {
@@ -166,7 +225,7 @@ export function createApp(deps: AppDeps): App {
       } catch (error) {
         // Backend/OS error text is not guaranteed to be German; log it, show ours.
         log.error("open_pdf failed", error);
-        deps.messages.show(MESSAGES.readFailed);
+        messages.show(MESSAGES.readFailed);
         return;
       }
       if (!picked) return; // dialog cancelled: nothing changes, no message
@@ -176,7 +235,7 @@ export function createApp(deps: AppDeps): App {
         pdf = await deps.loadPdfDocument(picked.bytes);
       } catch (error) {
         log.warn("PDF rejected", error);
-        deps.messages.show(MESSAGES[classifyLoadError(error)]);
+        messages.show(MESSAGES[classifyLoadError(error)]);
         return;
       }
 
@@ -185,7 +244,7 @@ export function createApp(deps: AppDeps): App {
       } catch (error) {
         log.error("accept_opened_pdf failed", error);
         await pdf.destroy().catch(() => undefined);
-        deps.messages.show(MESSAGES.readFailed);
+        messages.show(MESSAGES.readFailed);
         return;
       }
 
@@ -216,17 +275,17 @@ export function createApp(deps: AppDeps): App {
 
   async function insertSignature(): Promise<void> {
     const doc = current;
-    if (!doc || inserting || opening) return;
+    if (!doc || inserting || !editable()) return;
     inserting = true;
     refreshToolbar();
-    deps.messages.hide();
+    messages.hide();
     try {
       let bytes: Uint8Array | null;
       try {
         bytes = await deps.pickSignaturePng();
       } catch (error) {
         log.error("pick_signature_png failed", error);
-        deps.messages.show(MESSAGES.readFailed);
+        messages.show(MESSAGES.readFailed);
         return;
       }
       if (!bytes) return; // dialog cancelled: nothing changes, no message
@@ -235,9 +294,11 @@ export function createApp(deps: AppDeps): App {
       try {
         size = readPngInfo(bytes);
         await deps.decodePng?.(bytes);
+        // Saving embeds it with pdf-lib; refuse now what could not be saved later.
+        await checkPngEmbeddable(bytes);
       } catch (error) {
         log.warn("PNG rejected", error);
-        deps.messages.show(MESSAGES.invalidPng);
+        messages.show(MESSAGES.invalidPng);
         return;
       }
 
@@ -257,7 +318,7 @@ export function createApp(deps: AppDeps): App {
       selectInModel(doc.state, element.id);
     } catch (error) {
       log.error("inserting the signature failed", error);
-      deps.messages.show(MESSAGES.invalidPng);
+      messages.show(MESSAGES.invalidPng);
     } finally {
       inserting = false;
       changed();
@@ -277,13 +338,64 @@ export function createApp(deps: AppDeps): App {
 
   function updateElement(id: string, geometry: ElementGeometry): void {
     if (!current) return;
-    if (updateElementGeometry(current.state, id, geometry.rect, geometry.rotation)) changed();
+    if (updateElementGeometry(current.state, id, geometry.rect, geometry.rotation)) {
+      dropSavedNotice();
+      changed();
+    }
   }
 
   function removeElement(id: string): void {
     if (!editable() || !getElement(current!.state, id)) return;
     removeFromModel(current!.state, id);
+    dropSavedNotice();
     changed();
+  }
+
+  async function save(): Promise<void> {
+    const doc = current;
+    // While a PNG is being inserted, saving now would miss it.
+    if (!doc || !editable() || inserting || doc.state.elements.length === 0) return;
+    saving = true;
+    refreshToolbar();
+    deps.toolbar.setEnabled("open", false);
+    deps.setBusy?.(true);
+    messages.hide();
+    try {
+      // Saved as they are now, even if they change while the file is built.
+      const elements = doc.state.elements.map((e) => ({ ...e, rect: { ...e.rect } }));
+      const images = new Map(doc.state.images);
+
+      let bytes: Uint8Array;
+      try {
+        const viewports = new Map<number, PageViewport>();
+        for (const pageIndex of new Set(elements.map((e) => e.pageIndex))) {
+          const page = await doc.pdf.proxy.getPage(pageIndex + 1);
+          viewports.set(pageIndex, page.getViewport({ scale: 1 }));
+        }
+        bytes = await deps.buildSignedPdf(doc.state.sourceBytes, elements, images, viewports);
+      } catch (error) {
+        log.error("building the signed PDF failed", error);
+        messages.show(MESSAGES.buildFailed);
+        return;
+      }
+
+      let savedName: string | null;
+      try {
+        savedName = await deps.savePdf(bytes);
+      } catch (error) {
+        // Backend/OS error text is not guaranteed to be German; log it, show ours.
+        log.error("save_pdf failed", error);
+        messages.show(MESSAGES.saveFailed);
+        return;
+      }
+      if (savedName === null) return; // dialog cancelled: nothing written, no message
+      messages.info(savedMessage(savedName));
+    } finally {
+      saving = false;
+      deps.setBusy?.(false);
+      deps.toolbar.setEnabled("open", true);
+      refreshToolbar();
+    }
   }
 
   function removeSelected(): boolean {
@@ -298,6 +410,7 @@ export function createApp(deps: AppDeps): App {
       if (action === "open") void openPdf();
       else if (action === "insertSignature") void insertSignature();
       else if (action === "removeElement") removeSelected();
+      else if (action === "save") void save();
     },
     openPdf,
     selectPage,
@@ -305,6 +418,7 @@ export function createApp(deps: AppDeps): App {
     selectElement,
     updateElement,
     removeElement,
+    save,
     handleShortcut(shortcut) {
       if (confirming || !editable() || !current) return false;
       if (shortcut === "removeElement") return removeSelected();

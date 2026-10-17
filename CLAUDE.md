@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-ecpdfsign is a Tauri v2 desktop app with a vanilla TypeScript frontend (no framework) built by Vite. It renders PDFs with pdf.js and will write them with pdf-lib. Unit tests run with Vitest (`src/**/*.test.ts`) and `cargo test`; there is no linter or formatter configured yet.
+ecpdfsign is a Tauri v2 desktop app with a vanilla TypeScript frontend (no framework) built by Vite. It renders PDFs with pdf.js and writes the signed copy with pdf-lib (`src/pdf/save.ts`). Unit tests run with Vitest (`src/**/*.test.ts`) and `cargo test`; there is no linter or formatter configured yet.
 
 ## Commands
 

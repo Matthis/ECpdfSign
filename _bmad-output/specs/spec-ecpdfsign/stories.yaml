@@ -24,10 +24,11 @@
 - id: "3"
   title: Save as new PDF
   description: >-
-    "Speichern" opens a save-as dialog and writes a new PDF with pdf-lib whose
-    placements (position, size and rotation) match the preview on every page,
-    including rotated pages and offset CropBoxes, refusing the source path
-    (CAP-5).
+    "Speichern" opens a save-as dialog suggesting "<Name>_signiert.pdf" and
+    writes a new PDF with pdf-lib whose placements (position, size and
+    rotation) match the preview on every page, including rotated pages and
+    offset CropBoxes; the original is only overwritten if the user explicitly
+    picks its name (CAP-5).
   spec_checkpoint: true
   done_checkpoint: false
   invoke_dev_with: >-

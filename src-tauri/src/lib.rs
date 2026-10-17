@@ -1,7 +1,10 @@
-use std::path::PathBuf;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use tauri::ipc::Response;
+use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
@@ -14,7 +17,7 @@ use tauri_plugin_dialog::DialogExt;
 #[derive(Default)]
 struct SourceFiles {
     pending: Option<PathBuf>,
-    /// Read by the save command (later story) to refuse overwriting the source.
+    /// The document that is shown; `save_pdf` suggests a name next to it.
     source: Option<PathBuf>,
 }
 
@@ -143,6 +146,143 @@ fn accept_opened_pdf(state: State<'_, AppState>) {
     state.files().accept_pending();
 }
 
+/// Error text `save_pdf` returns when no document has been accepted yet.
+/// Mirrored as `SAVE_NO_DOCUMENT_ERROR` in `src/backend.ts`; change both together.
+const SAVE_NO_DOCUMENT_ERROR: &str = "no-document";
+
+/// Error text `save_pdf` returns when the request body is not raw, non-empty
+/// PDF bytes. Mirrored as `SAVE_INVALID_BODY_ERROR` in `src/backend.ts`.
+const SAVE_INVALID_BODY_ERROR: &str = "invalid-body";
+
+/// Folder and file name the save dialog suggests for `source`: the source's
+/// folder and `<Name>_signiert.pdf`, where `<Name>` is the source file name
+/// without its `.pdf` extension (any case).
+fn suggested_save_target(source: &Path) -> (Option<PathBuf>, String) {
+    let folder = source
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf);
+    let is_pdf = source
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"));
+    let stem = if is_pdf {
+        source.file_stem()
+    } else {
+        source.file_name()
+    };
+    let stem = stem
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Dokument".to_string());
+    (folder, format!("{stem}_signiert.pdf"))
+}
+
+/// Removes the temporary file unless the write completed.
+struct TempFileGuard<'a> {
+    path: &'a Path,
+    keep: bool,
+}
+
+impl Drop for TempFileGuard<'_> {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = fs::remove_file(self.path);
+        }
+    }
+}
+
+/// Writes `bytes` to `target` without ever leaving a partial file: the data
+/// goes to a new temporary file in the target's folder, is flushed to disk and
+/// then renamed over `target` (replacing an existing file). On any error the
+/// temporary file is removed and `target` is untouched.
+fn write_atomically(target: &Path, bytes: &[u8]) -> io::Result<()> {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let folder = match target.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    if target.file_name().is_none() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "target has no file name"));
+    }
+
+    // A short fixed name, so a target name near the 255-character limit still
+    // works. `create_new` never reuses an existing file; retry with the next
+    // number if one exists.
+    let (temp_path, mut file) = loop {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let candidate = folder.join(format!(".ecpdfsign-{}-{n}.tmp", std::process::id()));
+        match OpenOptions::new().write(true).create_new(true).open(&candidate) {
+            Ok(file) => break (candidate, file),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    };
+    let mut guard = TempFileGuard {
+        path: &temp_path,
+        keep: false,
+    };
+
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(&temp_path, target)?;
+    guard.keep = true;
+    Ok(())
+}
+
+/// Shows the native "save as" dialog, suggesting `<Name>_signiert.pdf` in the
+/// source document's folder, and writes the request body (the raw bytes of
+/// the signed PDF) to the picked file via [`write_atomically`]. Returns the
+/// saved file's name as UTF-8; an empty payload means the dialog was
+/// cancelled and nothing was written. The source is only replaced if the user
+/// picks its name and confirms the dialog's overwrite prompt.
+///
+/// `async` for the same reason as [`open_pdf`].
+#[tauri::command]
+async fn save_pdf(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    request: Request<'_>,
+) -> Result<Response, String> {
+    let bytes = match request.body() {
+        InvokeBody::Raw(bytes) if !bytes.is_empty() => bytes.clone(),
+        _ => return Err(SAVE_INVALID_BODY_ERROR.to_string()),
+    };
+    let source = state
+        .files()
+        .source
+        .clone()
+        .ok_or_else(|| SAVE_NO_DOCUMENT_ERROR.to_string())?;
+    let (folder, file_name) = suggested_save_target(&source);
+
+    let mut dialog = window
+        .dialog()
+        .file()
+        .set_title("PDF speichern")
+        .add_filter("PDF-Dokument", &["pdf"])
+        .set_file_name(file_name)
+        .set_parent(&window);
+    if let Some(folder) = folder {
+        dialog = dialog.set_directory(folder);
+    }
+    let Some(picked) = dialog.blocking_save_file() else {
+        return Ok(Response::new(Vec::new()));
+    };
+    let target = picked
+        .into_path()
+        .map_err(|_| "Der gewählte Speicherort wird nicht unterstützt.".to_string())?;
+
+    let saved_name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || write_atomically(&target, &bytes))
+        .await
+        .map_err(|e| format!("Die Datei konnte nicht gespeichert werden ({e})."))?
+        .map_err(|e| format!("Die Datei konnte nicht gespeichert werden ({e})."))?;
+    Ok(Response::new(saved_name.into_bytes()))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -151,7 +291,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_pdf,
             accept_opened_pdf,
-            pick_signature_png
+            pick_signature_png,
+            save_pdf
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -224,6 +365,7 @@ mod tests {
     fn every_manifest_command_is_granted_to_the_main_window() {
         let commands = manifest_commands(include_str!("../build.rs"));
         assert!(commands.contains(&"pick_signature_png".to_string()));
+        assert!(commands.contains(&"save_pdf".to_string()));
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/default.json"))
                 .expect("default.json is valid JSON");
@@ -249,6 +391,119 @@ mod tests {
             signature_payload(Some(Vec::new())),
             Err(EMPTY_FILE_ERROR.to_string())
         );
+    }
+
+    #[test]
+    fn save_error_literals_match_frontend() {
+        // `src/backend.ts` mirrors these exact strings; change both together.
+        assert_eq!(SAVE_NO_DOCUMENT_ERROR, "no-document");
+        assert_eq!(SAVE_INVALID_BODY_ERROR, "invalid-body");
+    }
+
+    #[test]
+    fn suggests_signiert_name_in_source_folder() {
+        let source = Path::new("docs").join("Vertrag.pdf");
+        assert_eq!(
+            suggested_save_target(&source),
+            (Some(PathBuf::from("docs")), "Vertrag_signiert.pdf".to_string())
+        );
+    }
+
+    #[test]
+    fn suggestion_strips_pdf_extension_in_any_case_only() {
+        assert_eq!(suggested_save_target(Path::new("Ü Vertrag.PDF")).1, "Ü Vertrag_signiert.pdf");
+        assert_eq!(suggested_save_target(Path::new("a.b.pdf")).1, "a.b_signiert.pdf");
+        assert_eq!(suggested_save_target(Path::new("scan")).1, "scan_signiert.pdf");
+        assert_eq!(suggested_save_target(Path::new("scan.txt")).1, "scan.txt_signiert.pdf");
+        // A bare file name has no folder to suggest.
+        assert_eq!(suggested_save_target(Path::new("Vertrag.pdf")).0, None);
+    }
+
+    /// A fresh, empty folder under the system temp dir, removed on drop.
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "ecpdfsign-test-{name}-{}-{:?}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&dir).unwrap();
+            TestDir(dir)
+        }
+
+        fn entries(&self) -> Vec<String> {
+            let mut names: Vec<String> = fs::read_dir(&self.0)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn atomic_write_creates_a_new_file() {
+        let dir = TestDir::new("new");
+        let target = dir.0.join("Vertrag_signiert.pdf");
+        write_atomically(&target, b"%PDF-1.7 signed").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"%PDF-1.7 signed");
+        assert_eq!(dir.entries(), vec!["Vertrag_signiert.pdf"]);
+    }
+
+    #[test]
+    fn atomic_write_replaces_an_existing_file() {
+        let dir = TestDir::new("replace");
+        let target = dir.0.join("Vertrag.pdf");
+        fs::write(&target, b"%PDF-1.4 original, longer than the new content").unwrap();
+        write_atomically(&target, b"%PDF-1.7 signed").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"%PDF-1.7 signed");
+        assert_eq!(dir.entries(), vec!["Vertrag.pdf"]);
+    }
+
+    #[test]
+    fn atomic_write_handles_a_target_name_at_the_length_limit() {
+        let dir = TestDir::new("long");
+        // 255 bytes, the usual limit for one path component.
+        let name = format!("{}.pdf", "a".repeat(251));
+        let target = dir.0.join(&name);
+        write_atomically(&target, b"%PDF-1.7 signed").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"%PDF-1.7 signed");
+        assert_eq!(dir.entries(), vec![name]);
+    }
+
+    #[test]
+    fn failed_atomic_write_leaves_no_temp_file() {
+        let dir = TestDir::new("fail");
+        // A folder in the target's place: the temp file is written, but the
+        // rename over it fails on every platform.
+        let target = dir.0.join("Vertrag.pdf");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("inhalt.txt"), b"x").unwrap();
+
+        assert!(write_atomically(&target, b"%PDF-1.7 signed").is_err());
+
+        assert_eq!(dir.entries(), vec!["Vertrag.pdf"]);
+        assert!(target.is_dir());
+        assert_eq!(fs::read(target.join("inhalt.txt")).unwrap(), b"x");
+    }
+
+    #[test]
+    fn atomic_write_into_a_missing_folder_fails_without_creating_it() {
+        let dir = TestDir::new("missing");
+        let target = dir.0.join("fehlt").join("Vertrag.pdf");
+        assert!(write_atomically(&target, b"%PDF").is_err());
+        assert!(dir.entries().is_empty());
     }
 
     #[test]

@@ -3,11 +3,13 @@
 
 import { PDFDocument } from "pdf-lib";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createApp, MESSAGES, type AppDeps } from "./app";
+import { createApp, MESSAGES, savedMessage, type AppDeps } from "./app";
 import type { OpenedPdf } from "./backend";
 import { loadPdfDocument, type LoadedPdf } from "./pdf/document";
 import { OWNER_PASSWORD_ONLY_PDF, USER_PASSWORD_PDF } from "./pdf/encryptedFixtures.test-data";
-import { makePng } from "./signature/pngFixtures.test-data";
+import { getDocument, OPS } from "./pdf/pdfjs";
+import { buildSignedPdf } from "./pdf/save";
+import { encodePng, makeAnimatedPng, makePng } from "./signature/pngFixtures.test-data";
 import type { ShownPage } from "./ui/pageView";
 
 async function makePdf(pageCount: number): Promise<Uint8Array> {
@@ -45,6 +47,8 @@ function setup() {
     }),
     pickSignaturePng: vi.fn(async () => pngPicks.shift() ?? null),
     decodePng: vi.fn(async (_bytes: Uint8Array) => undefined),
+    buildSignedPdf: vi.fn(buildSignedPdf),
+    savePdf: vi.fn(async (_bytes: Uint8Array): Promise<string | null> => "vertrag_signiert.pdf"),
     confirmDiscard: vi.fn(async () => true),
     toolbar: { setEnabled: vi.fn(), setDocumentName: vi.fn() },
     pageView: {
@@ -54,7 +58,7 @@ function setup() {
     },
     thumbnails: { setDocument: vi.fn(), setSelected: vi.fn() },
     overlay: { sync: vi.fn() },
-    messages: { show: vi.fn(), hide: vi.fn() },
+    messages: { show: vi.fn(), info: vi.fn(), hide: vi.fn() },
     setBusy: vi.fn(),
     log: { error: vi.fn(), warn: vi.fn() },
   } satisfies AppDeps;
@@ -90,12 +94,31 @@ function clearCalls(deps: ReturnType<typeof setup>["deps"]): void {
 
 const NOT_A_PDF = new TextEncoder().encode("Das ist keine PDF-Datei, nur Text.\n".repeat(10));
 
+/** A PDF pdf.js shows but pdf-lib cannot load: its %PDF header is broken. */
+async function uneditablePdf(): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  doc.addPage([595, 842]);
+  const bytes = await doc.save({ useObjectStreams: false });
+  const index = new TextDecoder("latin1").decode(bytes).indexOf("%PDF-");
+  bytes.set(new TextEncoder().encode("%XYZ-"), index);
+  return bytes;
+}
+
 describe("German messages", () => {
   it("are German and distinguish encrypted from unreadable files", () => {
     expect(MESSAGES.encrypted).toBe(
       "Passwortgeschützte oder verschlüsselte PDF-Dateien werden noch nicht unterstützt.",
     );
     expect(MESSAGES.invalid).toBe("Die Datei konnte nicht als PDF geöffnet werden.");
+    expect(MESSAGES.uneditable).toBe("Diese PDF-Datei kann nicht bearbeitet werden.");
+  });
+
+  it("are German for saving", () => {
+    expect(MESSAGES.buildFailed).toBe("Die PDF-Datei konnte nicht erstellt werden.");
+    expect(MESSAGES.saveFailed).toBe(
+      "Die Datei konnte nicht gespeichert werden. Ist sie in einem anderen Programm geöffnet oder schreibgeschützt?",
+    );
+    expect(savedMessage("Vertrag_signiert.pdf")).toBe("Gespeichert: Vertrag_signiert.pdf");
   });
 });
 
@@ -264,9 +287,10 @@ describe("matrix: Open another PDF", () => {
 });
 
 const REJECTED_FILES = [
-  { row: "Password-protected", name: "geheim.pdf", bytes: USER_PASSWORD_PDF, message: MESSAGES.encrypted },
-  { row: "Owner-password only", name: "rechte.pdf", bytes: OWNER_PASSWORD_ONLY_PDF, message: MESSAGES.encrypted },
-  { row: "Corrupt / not a PDF", name: "kaputt.pdf", bytes: () => NOT_A_PDF, message: MESSAGES.invalid },
+  { row: "Password-protected", name: "geheim.pdf", bytes: async () => USER_PASSWORD_PDF(), message: MESSAGES.encrypted },
+  { row: "Owner-password only", name: "rechte.pdf", bytes: async () => OWNER_PASSWORD_ONLY_PDF(), message: MESSAGES.encrypted },
+  { row: "Corrupt / not a PDF", name: "kaputt.pdf", bytes: async () => NOT_A_PDF, message: MESSAGES.invalid },
+  { row: "pdf-lib cannot load", name: "seltsam.pdf", bytes: uneditablePdf, message: MESSAGES.uneditable },
 ] as const;
 
 for (const { row, name, bytes, message } of REJECTED_FILES) {
@@ -278,7 +302,7 @@ for (const { row, name, bytes, message } of REJECTED_FILES) {
       const before = app.getDocument();
       clearCalls(deps);
 
-      await open(name, bytes());
+      await open(name, await bytes());
 
       expect(deps.loadPdfDocument).toHaveBeenCalledTimes(1);
       expect(deps.messages.show).toHaveBeenCalledWith(message);
@@ -294,7 +318,7 @@ for (const { row, name, bytes, message } of REJECTED_FILES) {
 
     it("keeps the empty state, shows the German message and does not accept the file", async () => {
       const { app, deps, open } = setup();
-      await open(name, bytes());
+      await open(name, await bytes());
 
       expect(deps.messages.show).toHaveBeenCalledWith(message);
       expect(deps.acceptOpenedPdf).not.toHaveBeenCalled();
@@ -635,4 +659,292 @@ describe("matrix: Open another PDF with elements placed", () => {
     await pending;
     expect(app.getDocument()!.state.elements).toHaveLength(1);
   });
+});
+
+// ---- Story 3: save as new PDF --------------------------------------------
+
+/** Page index of every image pdf.js paints in `bytes`, in page order. */
+async function imagePages(bytes: Uint8Array): Promise<number[]> {
+  const task = getDocument({ data: bytes.slice() });
+  try {
+    const doc = await task.promise;
+    const pages: number[] = [];
+    for (let i = 0; i < doc.numPages; i++) {
+      const { fnArray } = await (await doc.getPage(i + 1)).getOperatorList();
+      for (const fn of fnArray) if (fn === OPS.paintImageXObject) pages.push(i);
+    }
+    return pages;
+  } finally {
+    await task.destroy();
+  }
+}
+
+describe("save toolbar state", () => {
+  it("enables 'Speichern' only while at least one element is placed", async () => {
+    const { app, enabled, insert } = await withDocument();
+    expect(enabled("save")).toBe(false);
+
+    await insert(PNG);
+    expect(enabled("save")).toBe(true);
+
+    app.handleToolbarAction("removeElement");
+    expect(enabled("save")).toBe(false);
+  });
+
+  it("is disabled without a document and while another PDF is being opened", async () => {
+    const empty = setup();
+    await empty.app.save();
+    expect(empty.deps.buildSignedPdf).not.toHaveBeenCalled();
+
+    const { app, deps, insert, enabled } = await withDocument();
+    await insert(PNG);
+    let release!: (value: OpenedPdf | null) => void;
+    deps.pickPdf.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+    const pending = app.openPdf();
+    await vi.waitFor(() => expect(deps.pickPdf).toHaveBeenCalledTimes(2));
+
+    expect(enabled("save")).toBe(false);
+    await app.save();
+    expect(deps.buildSignedPdf).not.toHaveBeenCalled();
+
+    release(null);
+    await pending;
+    expect(enabled("save")).toBe(true);
+  });
+});
+
+describe("matrix: Save", () => {
+  it("builds from the source and every placement, then hands the bytes to the save dialog", async () => {
+    const { app, deps, insert, enabled } = await withDocument();
+    await insert(PNG);
+    app.selectPage(2);
+    await insert(PNG);
+    const state = app.getDocument()!.state;
+    const sourceBefore = state.sourceBytes.slice();
+    const elementsBefore = structuredClone(state.elements);
+
+    app.handleToolbarAction("save");
+    await vi.waitFor(() => expect(deps.messages.info).toHaveBeenCalled());
+
+    expect(deps.buildSignedPdf).toHaveBeenCalledTimes(1);
+    const [source, elements, images, viewports] = deps.buildSignedPdf.mock.calls[0];
+    expect(source).toBe(state.sourceBytes);
+    expect(elements).toEqual(state.elements);
+    expect(images.size).toBe(1);
+    expect([...viewports.keys()].sort()).toEqual([0, 2]);
+    expect(viewports.get(0)?.scale).toBe(1);
+
+    expect(deps.savePdf).toHaveBeenCalledTimes(1);
+    const saved = deps.savePdf.mock.calls[0][0];
+    expect(saved).toBe(await deps.buildSignedPdf.mock.results[0].value);
+    expect(await imagePages(saved)).toEqual([0, 2]);
+    expect(deps.buildSignedPdf.mock.invocationCallOrder[0]).toBeLessThan(
+      deps.savePdf.mock.invocationCallOrder[0],
+    );
+
+    expect(deps.messages.info).toHaveBeenCalledWith("Gespeichert: vertrag_signiert.pdf");
+    expect(deps.messages.show).not.toHaveBeenCalled();
+    // Nothing about the document changed: source bytes, elements, selection.
+    expect(state.sourceBytes).toEqual(sourceBefore);
+    expect(state.elements).toEqual(elementsBefore);
+    expect(app.getDocument()!.state).toBe(state);
+    expect(enabled("save")).toBe(true);
+    expect(deps.setBusy).toHaveBeenLastCalledWith(false);
+  });
+
+  it("is busy while saving: 'Speichern' and 'PDF Öffnen' are disabled and a second save is ignored", async () => {
+    const { app, deps, insert, enabled } = await withDocument();
+    await insert(PNG);
+    let finish!: (name: string | null) => void;
+    deps.savePdf.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+
+    const pending = app.save();
+    await vi.waitFor(() => expect(deps.savePdf).toHaveBeenCalledTimes(1));
+    expect(enabled("save")).toBe(false);
+    expect(enabled("open")).toBe(false);
+    expect(enabled("insertSignature")).toBe(false);
+    expect(deps.setBusy).toHaveBeenLastCalledWith(true);
+    await app.save();
+    await app.openPdf();
+    expect(deps.buildSignedPdf).toHaveBeenCalledTimes(1);
+    expect(deps.pickPdf).toHaveBeenCalledTimes(1); // only the initial open
+
+    finish("x.pdf");
+    await pending;
+    expect(enabled("save")).toBe(true);
+    expect(enabled("open")).toBe(true);
+    expect(enabled("insertSignature")).toBe(true);
+    expect(deps.setBusy).toHaveBeenLastCalledWith(false);
+  });
+
+  it("saves what was placed when 'Speichern' was clicked, even if an element moves meanwhile", async () => {
+    const { app, deps, insert } = await withDocument();
+    await insert(PNG);
+    const [element] = app.getDocument()!.state.elements;
+    const rect = { ...element.rect };
+    let finishBuild!: () => void;
+    const gate = new Promise<void>((resolve) => (finishBuild = resolve));
+    deps.buildSignedPdf.mockImplementationOnce(async (...args) => {
+      await gate;
+      return buildSignedPdf(...args);
+    });
+
+    const pending = app.save();
+    await vi.waitFor(() => expect(deps.buildSignedPdf).toHaveBeenCalled());
+    app.updateElement(element.id, { rect: { ...rect, x: rect.x + 100 }, rotation: 0 });
+    finishBuild();
+    await pending;
+
+    expect(deps.buildSignedPdf.mock.calls[0][1][0].rect).toEqual(rect);
+  });
+});
+
+describe("save while a PNG is being inserted", () => {
+  it("is disabled and ignored until the insert has finished", async () => {
+    const { app, deps, insert, enabled } = await withDocument();
+    await insert(PNG);
+    let release!: (value: Uint8Array | null) => void;
+    deps.pickSignaturePng.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+
+    const pending = app.insertSignature();
+    expect(enabled("save")).toBe(false);
+    await app.save();
+    expect(deps.buildSignedPdf).not.toHaveBeenCalled();
+
+    release(PNG);
+    await pending;
+    expect(enabled("save")).toBe(true);
+    await app.save();
+    expect(deps.buildSignedPdf.mock.calls[0][1]).toHaveLength(2);
+  });
+});
+
+describe("'Gespeichert' notice", () => {
+  async function saved() {
+    const ctx = await withDocument();
+    await ctx.insert(PNG);
+    await ctx.app.save();
+    expect(ctx.deps.messages.info).toHaveBeenCalledTimes(1);
+    ctx.deps.messages.hide.mockClear();
+    return ctx;
+  }
+
+  it("disappears when an element is moved", async () => {
+    const { app, deps } = await saved();
+    const [element] = app.getDocument()!.state.elements;
+    app.updateElement(element.id, { rect: { ...element.rect, x: element.rect.x + 5 }, rotation: 0 });
+    expect(deps.messages.hide).toHaveBeenCalledTimes(1);
+    app.updateElement(element.id, { rect: { ...element.rect, x: element.rect.x + 5 }, rotation: 0 });
+    expect(deps.messages.hide).toHaveBeenCalledTimes(1); // already gone
+  });
+
+  it("disappears when an element is removed or inserted", async () => {
+    const removed = await saved();
+    removed.app.handleToolbarAction("removeElement");
+    expect(removed.deps.messages.hide).toHaveBeenCalledTimes(1);
+
+    const inserted = await saved();
+    await inserted.insert(PNG);
+    expect(inserted.deps.messages.hide).toHaveBeenCalled();
+  });
+
+  it("stays while only the selection or page changes", async () => {
+    const { app, deps } = await saved();
+    app.selectElement(null);
+    app.selectPage(1);
+    expect(deps.messages.hide).not.toHaveBeenCalled();
+  });
+
+  it("an error shown afterwards is not hidden by the next element change", async () => {
+    const { app, deps, insert } = await saved();
+    await insert(new TextEncoder().encode("kein Bild")); // error: not a PNG
+    expect(deps.messages.show).toHaveBeenCalledWith(MESSAGES.invalidPng);
+    deps.messages.hide.mockClear();
+    const [element] = app.getDocument()!.state.elements;
+    app.updateElement(element.id, { rect: { ...element.rect, x: element.rect.x + 5 }, rotation: 0 });
+    expect(deps.messages.hide).not.toHaveBeenCalled();
+  });
+});
+
+describe("matrix: Save dialog cancelled", () => {
+  it("writes nothing and shows no message", async () => {
+    const { app, deps, insert, enabled } = await withDocument();
+    await insert(PNG);
+    deps.savePdf.mockResolvedValueOnce(null);
+    await app.save();
+    expect(deps.messages.info).not.toHaveBeenCalled();
+    expect(deps.messages.show).not.toHaveBeenCalled();
+    expect(app.getDocument()!.state.elements).toHaveLength(1);
+    expect(enabled("save")).toBe(true);
+  });
+});
+
+describe("matrix: Target = source", () => {
+  it("keeps the placements, and a second save starts again from the unchanged in-memory source", async () => {
+    const { app, deps, insert } = await withDocument();
+    await insert(PNG);
+    const state = app.getDocument()!.state;
+    const before = state.sourceBytes.slice();
+    deps.savePdf.mockResolvedValue("vertrag.pdf"); // the user picked the original's name
+
+    await app.save();
+    await app.save();
+
+    expect(deps.savePdf).toHaveBeenCalledTimes(2);
+    expect(deps.buildSignedPdf.mock.calls[1][0]).toEqual(before);
+    expect(state.sourceBytes).toEqual(before);
+    expect(state.elements).toHaveLength(1);
+    // Built from the source each time, so the second file has one signature, not two.
+    expect(await imagePages(deps.savePdf.mock.calls[1][0])).toEqual([0]);
+    expect(deps.messages.info).toHaveBeenLastCalledWith("Gespeichert: vertrag.pdf");
+  });
+});
+
+describe("matrix: Write fails", () => {
+  it("shows the German save error, never the raw backend text", async () => {
+    const { app, deps, insert } = await withDocument();
+    await insert(PNG);
+    deps.savePdf.mockRejectedValueOnce("Die Datei konnte nicht gespeichert werden (Zugriff verweigert (os error 5)).");
+    await app.save();
+    expect(deps.messages.show).toHaveBeenCalledTimes(1);
+    expect(deps.messages.show).toHaveBeenCalledWith(MESSAGES.saveFailed);
+    expect(deps.messages.info).not.toHaveBeenCalled();
+    expect(deps.log.error).toHaveBeenCalledWith("save_pdf failed", expect.anything());
+    expect(app.getDocument()!.state.elements).toHaveLength(1);
+  });
+});
+
+describe("matrix: Build fails", () => {
+  it("writes nothing, shows no dialog and the German build error", async () => {
+    const { app, deps, insert, enabled } = await withDocument();
+    await insert(PNG);
+    deps.buildSignedPdf.mockRejectedValueOnce(new Error("pdf-lib"));
+    await app.save();
+    expect(deps.savePdf).not.toHaveBeenCalled();
+    expect(deps.messages.show).toHaveBeenCalledWith(MESSAGES.buildFailed);
+    expect(enabled("save")).toBe(true);
+    expect(enabled("open")).toBe(true);
+  });
+});
+
+describe("matrix: PNG not embeddable", () => {
+  const notEmbeddable = [
+    ["an animated PNG", makeAnimatedPng(8, 8)],
+    [
+      "an interlaced PNG pdf-lib cannot decode",
+      encodePng({ width: 13, height: 9, bitDepth: 8, colorType: 6, samples: () => [0, 0, 0, 255], interlace: true }),
+    ],
+  ] as const;
+
+  for (const [name, png] of notEmbeddable) {
+    it(`refuses ${name} that the webview decodes, with the PNG message`, async () => {
+      const { app, deps, insert, enabled } = await withDocument();
+      await insert(png);
+      expect(deps.decodePng).toHaveBeenCalledTimes(1);
+      expect(app.getDocument()!.state.elements).toHaveLength(0);
+      expect(app.getDocument()!.state.images.size).toBe(0);
+      expect(deps.messages.show).toHaveBeenCalledWith(MESSAGES.invalidPng);
+      expect(enabled("save")).toBe(false);
+    });
+  }
 });

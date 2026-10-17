@@ -1,10 +1,12 @@
 // Thin wiring of the real backend, pdf.js and DOM views into the app flow (src/app.ts).
 
 import { createApp, type App } from "./app";
-import { acceptOpenedPdf, pickPdf, pickSignaturePng } from "./backend";
+import { acceptOpenedPdf, pickPdf, pickSignaturePng, savePdf } from "./backend";
 import { loadPdfDocument } from "./pdf/document";
+import { buildSignedPdf } from "./pdf/save";
 import { setupPdfjs } from "./pdf/setup";
 import { createConfirmDialog } from "./ui/confirmDialog";
+import { createMessageBar } from "./ui/messageBar";
 import { shortcutFor } from "./ui/keyboard";
 import { createOverlay } from "./ui/overlay";
 import { createPageView } from "./ui/pageView";
@@ -27,19 +29,7 @@ async function decodePng(bytes: Uint8Array): Promise<void> {
 
 setupPdfjs();
 
-const messageBar = byId("message");
-const messageText = byId("message-text");
-const messages = {
-  show(text: string): void {
-    messageText.textContent = text;
-    messageBar.hidden = false;
-  },
-  hide(): void {
-    messageBar.hidden = true;
-    messageText.textContent = "";
-  },
-};
-byId("message-close").addEventListener("click", messages.hide);
+const messages = createMessageBar(byId("message"), byId("message-text"), byId("message-close"));
 
 // The views call back into the app, which is created right after them.
 let app: App;
@@ -62,6 +52,8 @@ app = createApp({
   loadPdfDocument,
   pickSignaturePng,
   decodePng,
+  buildSignedPdf,
+  savePdf,
   confirmDiscard: () => discardDialog.ask(),
   toolbar,
   pageView,

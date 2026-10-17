@@ -9,19 +9,24 @@ export type PdfjsLoadOptions = Omit<
   "data" | "url" | "range" | "password"
 >;
 
-/** Why a file was refused. Both kinds map to a German message in the UI. */
-export type PdfLoadErrorKind = "encrypted" | "invalid";
+/**
+ * Why a file was refused. Each kind maps to a German message in the UI.
+ * "uneditable": pdf.js can show the file, but pdf-lib (which writes the signed
+ * copy) cannot load it, so it could never be saved.
+ */
+export type PdfLoadErrorKind = "encrypted" | "invalid" | "uneditable";
+
+const LOAD_ERROR_TEXT: Record<PdfLoadErrorKind, string> = {
+  encrypted: "PDF is encrypted or password-protected",
+  invalid: "File is not a readable PDF",
+  uneditable: "PDF cannot be loaded for writing",
+};
 
 export class PdfLoadError extends Error {
   readonly kind: PdfLoadErrorKind;
 
   constructor(kind: PdfLoadErrorKind, options?: { cause?: unknown }) {
-    super(
-      kind === "encrypted"
-        ? "PDF is encrypted or password-protected"
-        : "File is not a readable PDF",
-      options,
-    );
+    super(LOAD_ERROR_TEXT[kind], options);
     this.name = "PdfLoadError";
     this.kind = kind;
   }
@@ -66,26 +71,33 @@ export function configurePdfLoading(options: PdfjsLoadOptions): void {
   loadOptions = { ...options };
 }
 
+/** What pdf-lib, which writes the signed copy, makes of the file. */
+type PdfLibCheck =
+  | { status: "ok"; pageCount: number }
+  | { status: "encrypted" }
+  | { status: "unloadable"; error: unknown };
+
 /**
- * Whether pdf-lib (which later writes the signed copy) sees the file as
- * encrypted. pdf-lib cannot save encrypted PDFs, so even an owner-password-only
- * file that pdf.js opens without a password must be refused.
+ * Loads the file with pdf-lib the way saving will. pdf-lib cannot save
+ * encrypted PDFs, so even an owner-password-only file that pdf.js opens
+ * without a password must be refused, and a file pdf-lib cannot parse at all
+ * could be shown but never saved.
  *
- * `PDFDocument.load` without `ignoreEncryption` throws `EncryptedPDFError` in
- * exactly this case, but pdf-lib's errors are ES5 subclasses of `Error`, so
+ * `PDFDocument.load` without `ignoreEncryption` throws `EncryptedPDFError` for
+ * encrypted files, but pdf-lib's errors are ES5 subclasses of `Error`, so
  * `instanceof EncryptedPDFError` never matches. Loading with
  * `ignoreEncryption` and reading `isEncrypted` asks the same question reliably.
  */
-async function isEncryptedForPdfLib(bytes: Uint8Array): Promise<boolean> {
+async function checkWithPdfLib(bytes: Uint8Array): Promise<PdfLibCheck> {
   try {
-    const doc = await PDFDocument.load(bytes, {
+    const doc = await PDFDocument.load(bytes.slice(), {
       ignoreEncryption: true,
       updateMetadata: false,
     });
-    return doc.isEncrypted;
-  } catch {
-    // Unparseable for pdf-lib: pdf.js decides whether the file is readable.
-    return false;
+    if (doc.isEncrypted) return { status: "encrypted" };
+    return { status: "ok", pageCount: doc.getPageCount() };
+  } catch (error) {
+    return { status: "unloadable", error };
   }
 }
 
@@ -97,8 +109,10 @@ async function isEncryptedForPdfjs(proxy: PDFDocumentProxy): Promise<boolean> {
 
 /**
  * Loads a PDF from bytes. Rejects with `PdfLoadError` if the file is encrypted
- * (with or without a user password) or cannot be parsed. `bytes` is not
- * modified or detached; pdf.js gets its own copy.
+ * (with or without a user password), cannot be parsed, or can be shown by
+ * pdf.js but not loaded by pdf-lib (or pdf-lib sees a different page count, so
+ * signatures would land on the wrong pages). `bytes` is not modified or
+ * detached; pdf.js and pdf-lib get their own copies.
  */
 export async function loadPdfDocument(bytes: Uint8Array): Promise<LoadedPdf> {
   const task = getDocument({
@@ -108,19 +122,24 @@ export async function loadPdfDocument(bytes: Uint8Array): Promise<LoadedPdf> {
     data: bytes.slice(),
   });
 
-  const pdfLibEncrypted = isEncryptedForPdfLib(bytes);
+  const pdfLib = checkWithPdfLib(bytes);
 
   let proxy: PDFDocumentProxy;
   try {
     proxy = await task.promise;
     if (proxy.numPages < 1) throw new PdfLoadError("invalid");
-    if ((await pdfLibEncrypted) || (await isEncryptedForPdfjs(proxy))) {
+    const pdfLibResult = await pdfLib;
+    if (pdfLibResult.status === "encrypted" || (await isEncryptedForPdfjs(proxy))) {
       throw new PdfLoadError("encrypted");
     }
+    if (pdfLibResult.status === "unloadable") {
+      throw new PdfLoadError("uneditable", { cause: pdfLibResult.error });
+    }
+    if (pdfLibResult.pageCount !== proxy.numPages) throw new PdfLoadError("uneditable");
   } catch (error) {
     await task.destroy().catch(() => undefined);
     // A file pdf.js cannot parse may still be flagged as encrypted by pdf-lib.
-    const kind = (await pdfLibEncrypted) ? "encrypted" : classifyLoadError(error);
+    const kind = (await pdfLib).status === "encrypted" ? "encrypted" : classifyLoadError(error);
     throw error instanceof PdfLoadError && error.kind === kind
       ? error
       : new PdfLoadError(kind, { cause: error });

@@ -19,3 +19,9 @@
 - source_spec: `_bmad-output/specs/spec-ecpdfsign/stories/2-insert-place-scale-rotate-and-remove-signatures.md`
   summary: In story 3, verify that pdf-lib `embedPng` handles every PNG variant the structural check accepts (16-bit, indexed, greyscale+alpha, interlaced), or reject the variants it cannot embed (severity medium, unverified).
   evidence: Only 8-bit RGBA non-interlaced fixtures are run through pdf-lib. Fixtures of each variant run through `embedPng` would settle it.
+- source_spec: `_bmad-output/specs/spec-ecpdfsign/stories/3-save-as-new-pdf.md`
+  summary: Extract the `save_pdf` body check, the no-document check and the payload encoding into pure Rust functions and unit-test them (invalid body, no accepted source, cancel = empty, success = file name).
+  evidence: No test runs the command. If it returned an empty body on success, the frontend would treat the save as cancelled, and all tests would stay green.
+- source_spec: `_bmad-output/specs/spec-ecpdfsign/stories/3-save-as-new-pdf.md`
+  summary: `save_pdf` accepts only `InvokeBody::Raw`; under Tauri's postMessage IPC fallback the body arrives as JSON and every save fails with `invalid-body` (severity medium, unverified).
+  evidence: To settle it, check whether the fallback can trigger in the shipped app (WebView2 or WKWebView with the strict CSP). If it can, also accept a JSON number array.

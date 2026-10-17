@@ -44,11 +44,12 @@ A vision with a privacy pain behind it: people who need to put their handwritten
     - Several texts can be placed, moved, and resized independently, without distorted glyphs.
     - Clearing the place yields only the date; clearing the date yields only the place.
 - **CAP-5**
-  - **intent:** User saves the result as a new PDF; the original file stays unchanged.
+  - **intent:** User saves the result as a new PDF; the save dialog suggests "<Name>_signiert.pdf". The original stays unchanged unless the user actively changes the name back to the original file and confirms the overwrite.
   - **success:**
     - Every signature and text appears in the saved PDF at the position, size and rotation shown in the preview, including on rotated pages and pages with a non-zero CropBox origin.
     - All other content and pages are unchanged.
-    - The source file is byte-identical before and after.
+    - Saved under the suggested or any other new name, the source file is byte-identical before and after.
+    - Saved under the original name after the OS overwrite confirmation, the original is replaced by the signed version.
 - **CAP-6**
   - **intent:** User removes the selected placed element (a signature or a place/date text).
   - **success:** After removal, the element is gone from the preview and from the next saved PDF. It can be inserted again.
@@ -76,7 +77,7 @@ A vision with a privacy pain behind it: people who need to put their handwritten
 - Place/date text uses a bundled, embedded Unicode-capable font; PDF standard fonts are not enough.
 - Targets Windows 11 and macOS desktop.
 - Stack is fixed: Tauri 2, vanilla TypeScript (no UI framework), pdf.js for rendering, pdf-lib for writing.
-- The source PDF is never written: the save target must differ from the source path, and overwriting the source is refused.
+- The source PDF is never written implicitly: it is only overwritten when the user explicitly picks its name in the save dialog and confirms the overwrite.
 - PDFs are untrusted input. The CSP (currently `null` in `src-tauri/tauri.conf.json`) must be locked down, with no remote origins, before shipping.
 - Brownfield: the repo is the unmodified create-tauri-app vanilla-ts template. Keep the lib/bin crate split.
 

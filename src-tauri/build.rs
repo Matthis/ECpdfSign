@@ -6,6 +6,7 @@ fn main() {
             "open_pdf",
             "accept_opened_pdf",
             "pick_signature_png",
+            "save_pdf",
         ]),
     ))
     .expect("failed to run tauri-build");

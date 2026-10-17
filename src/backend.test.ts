@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   decodeOpenPayload,
+  decodeSavePayload,
   decodeSignaturePayload,
   EMPTY_FILE_ERROR,
   pickSignaturePng,
+  SAVE_INVALID_BODY_ERROR,
+  SAVE_NO_DOCUMENT_ERROR,
+  savePdf,
 } from "./backend";
 
 const invokeMock = vi.hoisted(() => vi.fn());
@@ -87,5 +91,35 @@ describe("pickSignaturePng", () => {
   it("decodes the raw payload", () => {
     expect(decodeSignaturePayload(new Uint8Array())).toBeNull();
     expect(decodeSignaturePayload(new Uint8Array([1, 2]))).toEqual(new Uint8Array([1, 2]));
+  });
+});
+
+describe("savePdf", () => {
+  it("sends the PDF as the raw body, not as JSON", async () => {
+    const pdf = new TextEncoder().encode("%PDF-1.7 signiert");
+    invokeMock.mockResolvedValueOnce(new TextEncoder().encode("Vertrag_signiert.pdf").buffer);
+    await expect(savePdf(pdf)).resolves.toBe("Vertrag_signiert.pdf");
+    expect(invokeMock).toHaveBeenLastCalledWith("save_pdf", pdf);
+    expect(invokeMock.mock.lastCall?.[1]).toBeInstanceOf(Uint8Array);
+  });
+
+  it("returns null when the dialog was cancelled", async () => {
+    invokeMock.mockResolvedValueOnce(new ArrayBuffer(0));
+    await expect(savePdf(new Uint8Array([1]))).resolves.toBeNull();
+  });
+
+  it("decodes a UTF-8 file name", () => {
+    expect(decodeSavePayload(new TextEncoder().encode("Übersicht_signiert.pdf"))).toBe(
+      "Übersicht_signiert.pdf",
+    );
+    expect(decodeSavePayload(new Uint8Array())).toBeNull();
+  });
+
+  it("passes backend errors on; the literals are the contract with lib.rs", async () => {
+    // SAVE_NO_DOCUMENT_ERROR / SAVE_INVALID_BODY_ERROR in src-tauri/src/lib.rs.
+    expect(SAVE_NO_DOCUMENT_ERROR).toBe("no-document");
+    expect(SAVE_INVALID_BODY_ERROR).toBe("invalid-body");
+    invokeMock.mockRejectedValueOnce("no-document");
+    await expect(savePdf(new Uint8Array([1]))).rejects.toBe(SAVE_NO_DOCUMENT_ERROR);
   });
 });

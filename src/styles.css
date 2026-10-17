@@ -10,6 +10,9 @@
   --error-bg: #fdecea;
   --error-border: #f5c2bd;
   --error-text: #8a1c12;
+  --info-bg: #e8f0fe;
+  --info-border: #c2d7f8;
+  --info-text: #174ea6;
   --danger: #c5221f;
 
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -104,6 +107,12 @@ body[aria-busy="true"] {
   flex: none;
   position: relative;
   z-index: 3;
+}
+
+.message[data-kind="info"] {
+  background: var(--info-bg);
+  border-bottom-color: var(--info-border);
+  color: var(--info-text);
 }
 
 .message[hidden] {

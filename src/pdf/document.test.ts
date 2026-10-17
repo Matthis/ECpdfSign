@@ -4,10 +4,22 @@ import { describe, expect, it } from "vitest";
 import { classifyLoadError, loadPdfDocument, PdfLoadError } from "./document";
 import { OWNER_PASSWORD_ONLY_PDF, USER_PASSWORD_PDF } from "./encryptedFixtures.test-data";
 
-async function makePdf(pageCount: number): Promise<Uint8Array> {
+async function makePdf(pageCount: number, options?: { plain?: boolean }): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
   for (let i = 0; i < pageCount; i++) doc.addPage([595, 842]);
-  return doc.save();
+  // `plain`: no object streams, so the structure can be patched as text.
+  return doc.save({ useObjectStreams: !options?.plain });
+}
+
+/** Replaces the first `search` in a PDF's bytes (Latin-1, so byte offsets stay put). */
+function patch(bytes: Uint8Array, search: string, replacement: string): Uint8Array {
+  if (search.length !== replacement.length) throw new Error("patch must keep the length");
+  const text = new TextDecoder("latin1").decode(bytes);
+  const index = text.indexOf(search);
+  if (index < 0) throw new Error(`${search} not found`);
+  const out = bytes.slice();
+  for (let i = 0; i < replacement.length; i++) out[index + i] = replacement.charCodeAt(i);
+  return out;
 }
 
 async function expectRejected(bytes: Uint8Array, kind: PdfLoadError["kind"]): Promise<void> {
@@ -72,6 +84,22 @@ describe("loadPdfDocument", () => {
 
   it("rejects an empty file", async () => {
     await expectRejected(new Uint8Array(), "invalid");
+  });
+
+  it("rejects a PDF pdf.js can show but pdf-lib cannot load (no %PDF header) as uneditable", async () => {
+    const bytes = patch(await makePdf(2, { plain: true }), "%PDF-", "%XYZ-");
+    // pdf.js alone accepts the file, so this really is the pdf-lib check.
+    const { getDocument } = await import("./pdfjs");
+    const task = getDocument({ data: bytes.slice() });
+    expect((await task.promise).numPages).toBe(2);
+    await task.destroy();
+
+    await expectRejected(bytes, "uneditable");
+  });
+
+  it("rejects a PDF whose page count pdf.js and pdf-lib disagree on as uneditable", async () => {
+    // /Count says 1 (pdf.js shows 1 page), the page tree holds 2 (pdf-lib walks them all).
+    await expectRejected(patch(await makePdf(2, { plain: true }), "/Count 2", "/Count 1"), "uneditable");
   });
 
   it("rejects a truncated PDF", async () => {

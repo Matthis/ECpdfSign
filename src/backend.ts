@@ -58,3 +58,25 @@ export function decodeSignaturePayload(payload: ArrayBuffer | Uint8Array): Uint8
   const data = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
   return data.byteLength === 0 ? null : data;
 }
+
+/** Error text `save_pdf` returns without an accepted document (SAVE_NO_DOCUMENT_ERROR in lib.rs). */
+export const SAVE_NO_DOCUMENT_ERROR = "no-document";
+/** Error text `save_pdf` returns for a body that is not raw, non-empty bytes (SAVE_INVALID_BODY_ERROR in lib.rs). */
+export const SAVE_INVALID_BODY_ERROR = "invalid-body";
+
+/**
+ * Hands the signed PDF to the backend, which shows the native save dialog
+ * (suggesting `<Name>_signiert.pdf` next to the source) and writes the file.
+ * The bytes go as the raw IPC body. Returns the saved file's name, or `null`
+ * if the user cancelled; rejects with the backend's error otherwise.
+ */
+export async function savePdf(bytes: Uint8Array): Promise<string | null> {
+  const payload = await invoke<ArrayBuffer>("save_pdf", bytes);
+  return decodeSavePayload(payload);
+}
+
+/** An empty payload means the dialog was cancelled; anything else is the UTF-8 file name. */
+export function decodeSavePayload(payload: ArrayBuffer | Uint8Array): string | null {
+  const data = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
+  return data.byteLength === 0 ? null : new TextDecoder().decode(data);
+}

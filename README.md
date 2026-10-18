@@ -16,6 +16,11 @@ No cloud, no account, no upload. Your documents never leave your machine.
 ![Version](https://img.shields.io/badge/version-0.1.0-1D3FBF)
 ![Status](https://img.shields.io/badge/status-v1%20feature%20complete-2E9E5B)
 
+[![Download for Windows](https://img.shields.io/badge/Download-Windows%20(portable%20EXE)-1D3FBF?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Matthis/ECpdfSign/releases/latest)
+[![Download for macOS](https://img.shields.io/badge/Download-macOS%20(universal%20DMG)-1D3FBF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Matthis/ECpdfSign/releases/latest)
+
+<img src="docs/screenshot.png" alt="ECpdfSign with a signature and a place/date text placed on the last page of a contract" width="860" />
+
 </div>
 
 ---

@@ -1,0 +1,78 @@
+# Builds the macOS app (universal: Apple silicon + Intel) on a macOS runner
+# and attaches the DMG to a GitHub release. Tauri cannot cross-compile to
+# macOS, so this is the only way to get a Mac build from a Windows machine.
+#
+# Runs on its own when a release is published, or by hand for an existing
+# release tag: Actions → "macOS release build" → Run workflow.
+#
+# The app is ad-hoc signed ("-"), not signed with an Apple Developer ID and
+# not notarized: Gatekeeper asks once before the first start.
+
+name: macOS release build
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and attach the macOS app to (e.g. v0.1.0)
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install npm packages
+        run: npm ci
+
+      - name: Test frontend and PDF output
+        run: npm test
+
+      - name: Test backend
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Build universal app and DMG (ad-hoc signed)
+        run: >
+          npm run tauri build --
+          --target universal-apple-darwin
+          --bundles dmg
+          --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
+
+      - name: Attach DMG to the release
+        run: |
+          dmg=$(ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg)
+          out="ECpdfSign-${TAG#v}-macos-universal.dmg"
+          cp "$dmg" "$out"
+          shasum -a 256 "$out"
+          gh release upload "$TAG" "$out" --clobber

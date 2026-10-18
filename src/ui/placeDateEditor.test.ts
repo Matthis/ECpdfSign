@@ -4,12 +4,22 @@ import { createPlaceDateEditor } from "./placeDateEditor";
 import { shortcutFor } from "./keyboard";
 
 function setup() {
-  const callbacks = { commit: vi.fn(), cancel: vi.fn() };
-  const editor = createPlaceDateEditor(callbacks);
-  document.body.append(editor.element);
+  const callbacks = { commit: vi.fn(), cancel: vi.fn(), grab: vi.fn(), resized: vi.fn() };
+  const frame = document.createElement("div");
+  const handle = document.createElement("div");
+  frame.append(handle);
+  const editor = createPlaceDateEditor(callbacks, { frame });
+  document.body.append(frame, editor.element);
   const place = editor.element.querySelector<HTMLInputElement>("input[type=text]")!;
   const date = editor.element.querySelector<HTMLInputElement>("input[type=date]")!;
-  return { editor, callbacks, place, date };
+  const separator = editor.element.querySelector<HTMLElement>(".place-date-separator")!;
+  return { editor, callbacks, place, date, separator, frame, handle };
+}
+
+function mousedown(target: EventTarget): MouseEvent {
+  const event = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+  target.dispatchEvent(event);
+  return event;
 }
 
 function keydown(target: HTMLElement, key: string): KeyboardEvent {
@@ -18,8 +28,8 @@ function keydown(target: HTMLElement, key: string): KeyboardEvent {
   return event;
 }
 
-function pointerdown(target: EventTarget): void {
-  target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 }));
+function pointerdown(target: EventTarget, button = 0): void {
+  target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button }));
 }
 
 beforeEach(() => {
@@ -115,11 +125,79 @@ describe("place/date editor", () => {
     expect(editor.editingId).toBeNull();
   });
 
-  it("focus leaving to nothing (a click on the separator) commits too", () => {
+  it("focus leaving to nothing commits too", () => {
     const { editor, callbacks, place } = setup();
     editor.open("el-1", "Bonn", "17.10.2026");
     place.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
     expect(callbacks.commit).toHaveBeenCalledWith("el-1", "Bonn", "17.10.2026");
+  });
+
+  it("the ', ' separator grabs the text: no commit, focus kept, the inputs never grab", () => {
+    const { editor, callbacks, place, date, separator } = setup();
+    editor.open("el-1", "", "17.10.2026");
+    pointerdown(separator);
+    expect(callbacks.grab).toHaveBeenCalledTimes(1);
+    expect(mousedown(separator).defaultPrevented).toBe(true);
+    expect(callbacks.commit).not.toHaveBeenCalled();
+    expect(editor.editingId).toBe("el-1");
+
+    pointerdown(place);
+    pointerdown(date);
+    expect(callbacks.grab).toHaveBeenCalledTimes(1);
+    // A click into an input still places the caret / opens the picker.
+    expect(mousedown(place).defaultPrevented).toBe(false);
+    expect(mousedown(date).defaultPrevented).toBe(false);
+  });
+
+  it("the frame is part of the editor: a pointerdown or the focus moving there does not commit", () => {
+    const { editor, callbacks, place, frame, handle } = setup();
+    editor.open("el-1", "Bonn", "17.10.2026");
+    pointerdown(frame);
+    pointerdown(handle);
+    expect(mousedown(handle).defaultPrevented).toBe(true);
+    place.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: handle }));
+    expect(callbacks.commit).not.toHaveBeenCalled();
+    expect(editor.editingId).toBe("el-1");
+
+    // Closed, the frame is an ordinary element again.
+    editor.close();
+    expect(mousedown(frame).defaultPrevented).toBe(false);
+  });
+
+  it("only while a left-button grab lasts does focus leaving keep the edit open", () => {
+    for (const release of ["pointerup", "pointercancel"]) {
+      const { editor, callbacks, place, frame } = setup();
+      const outside = document.createElement("button");
+      document.body.append(outside);
+      editor.open("el-1", "Bonn", "17.10.2026");
+      pointerdown(frame);
+      place.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: outside }));
+      expect(callbacks.commit).not.toHaveBeenCalled();
+      frame.dispatchEvent(new PointerEvent(release, { bubbles: true, button: 0 }));
+      place.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: outside }));
+      expect(callbacks.commit).toHaveBeenCalledWith("el-1", "Bonn", "17.10.2026");
+      document.body.replaceChildren();
+    }
+  });
+
+  it("a right-button pointerdown on the frame is no grab", () => {
+    const { editor, callbacks, place, frame } = setup();
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    editor.open("el-1", "Bonn", "17.10.2026");
+    pointerdown(frame, 2);
+    expect(callbacks.commit).not.toHaveBeenCalled();
+    place.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: outside }));
+    expect(callbacks.commit).toHaveBeenCalledWith("el-1", "Bonn", "17.10.2026");
+  });
+
+  it("reports when typing makes it grow", () => {
+    const { editor, callbacks, place } = setup();
+    editor.open("el-1", "", "17.10.2026");
+    place.value = "Garmisch-Partenkirchen";
+    place.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(callbacks.resized).toHaveBeenCalledTimes(1);
+    expect(place.style.width).toBe("23ch");
   });
 
   it("a half-entered date keeps the previous date instead of clearing it", () => {

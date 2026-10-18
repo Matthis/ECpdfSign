@@ -12,6 +12,8 @@ import {
   createDocumentState,
   getElement,
   getSelectedElement,
+  hasUnsavedChanges,
+  markSaved,
   removeElement as removeFromModel,
   selectElement as selectInModel,
   updateElementGeometry,
@@ -141,7 +143,8 @@ export interface App {
   handleToolbarAction(action: ToolbarAction): void;
   /**
    * Opens a PDF via the native dialog. Any failure keeps the current document.
-   * With elements placed it asks first; "Abbrechen" changes nothing.
+   * With elements placed and changed since the last successful save, it asks
+   * first; "Abbrechen" changes nothing.
    */
   openPdf(): Promise<void>;
   selectPage(pageIndex: number): void;
@@ -227,9 +230,13 @@ export function createApp(deps: AppDeps): App {
     },
   };
 
-  /** After an element changed, the document no longer matches the saved file. */
+  /**
+   * After an element changed, the document no longer matches the saved file:
+   * hide the "Gespeichert" notice. Not after a no-op update (e.g. a drag
+   * pinned at the page edge), which leaves nothing unsaved.
+   */
   function dropSavedNotice(): void {
-    if (savedNoticeShown) messages.hide();
+    if (savedNoticeShown && current && hasUnsavedChanges(current.state)) messages.hide();
   }
 
   /**
@@ -278,7 +285,7 @@ export function createApp(deps: AppDeps): App {
     refreshToolbar();
     deps.toolbar.setEnabled("open", false);
     try {
-      if (current && current.state.elements.length > 0) {
+      if (current && current.state.elements.length > 0 && hasUnsavedChanges(current.state)) {
         confirming = true;
         let discard: boolean;
         try {
@@ -586,7 +593,9 @@ export function createApp(deps: AppDeps): App {
       deps.setBusy?.(true);
       messages.hide();
 
-      // Saved as they are now, even if they change while the file is built.
+      // Saved as they are now, even if they change while the file is built;
+      // a change made meanwhile stays unsaved.
+      const revision = doc.state.revision;
       const elements = doc.state.elements.map((e) => ({ ...e, rect: { ...e.rect } }));
       const images = new Map(doc.state.images);
 
@@ -624,6 +633,7 @@ export function createApp(deps: AppDeps): App {
         return;
       }
       if (savedName === null) return; // dialog cancelled: nothing written, no message
+      markSaved(doc.state, revision);
       messages.saved(savedMessage(savedName));
     } finally {
       saving = false;

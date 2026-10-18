@@ -93,6 +93,16 @@ export interface DocumentState {
    * asked again until another document (or the same file again) is opened.
    */
   signatureWarningAccepted: boolean;
+  /**
+   * Counts element changes: insert, remove, a text edit, and a move, resize,
+   * rotation or font-size change larger than `GEOMETRY_TOLERANCE`. A mutation
+   * that fails (unknown element) or changes nothing beyond that tolerance
+   * (e.g. a float round trip of an unmoved box) never bumps it, nor do
+   * selection and page changes.
+   */
+  revision: number;
+  /** `revision` of the element snapshot last saved successfully. */
+  savedRevision: number;
 }
 
 export function createDocumentState(
@@ -116,7 +126,19 @@ export function createDocumentState(
     nextId: 1,
     signedSignatureCount,
     signatureWarningAccepted: false,
+    revision: 0,
+    savedRevision: 0,
   };
+}
+
+/** Whether the elements changed since the last successful save (or since opening). */
+export function hasUnsavedChanges(state: DocumentState): boolean {
+  return state.revision !== state.savedRevision;
+}
+
+/** Records that the elements as of `revision` (taken when saving began) are saved. */
+export function markSaved(state: DocumentState, revision: number): void {
+  state.savedRevision = revision;
 }
 
 /** Returns the page index clamped to the document, so callers cannot select a missing page. */
@@ -176,6 +198,7 @@ export function addSignature(state: DocumentState, init: NewSignature): Signatur
     imageId: init.imageId,
   };
   state.elements.push(element);
+  state.revision++;
   return element;
 }
 
@@ -201,6 +224,7 @@ export function addPlaceDate(state: DocumentState, init: NewPlaceDate): PlaceDat
     fontSize: init.fontSize,
   };
   state.elements.push(element);
+  state.revision++;
   return element;
 }
 
@@ -217,10 +241,31 @@ export function updatePlaceDateText(
 ): boolean {
   const element = getElement(state, id);
   if (!element || element.kind !== "placeDate") return false;
+  // Below the tolerance nothing is written, so float noise cannot pile up into a change.
+  if (element.place === place && element.date === date && rectsEqual(element.rect, rect)) return true;
+  state.revision++;
   element.place = place;
   element.date = date;
   element.rect = { ...rect };
   return true;
+}
+
+/**
+ * Geometry differences up to this (PDF units, degrees, pt) are float noise
+ * from the screen <-> PDF round trip, not a change.
+ */
+export const GEOMETRY_TOLERANCE = 1e-6;
+
+const near = (a: number, b: number) => Math.abs(a - b) <= GEOMETRY_TOLERANCE;
+
+function rectsEqual(a: PdfRect, b: PdfRect): boolean {
+  return near(a.x, b.x) && near(a.y, b.y) && near(a.width, b.width) && near(a.height, b.height);
+}
+
+/** Rotations (normalized, degrees) within the tolerance, across the 0/360 wrap too. */
+function rotationsEqual(a: number, b: number): boolean {
+  const d = Math.abs(a - b) % 360;
+  return Math.min(d, 360 - d) <= GEOMETRY_TOLERANCE;
 }
 
 export function getElement(state: DocumentState, id: string): PlacedElement | undefined {
@@ -240,9 +285,21 @@ export function updateElementGeometry(
 ): boolean {
   const element = getElement(state, id);
   if (!element) return false;
+  const normalized = normalizeRotation(rotation);
+  const newFontSize = element.kind === "placeDate" ? (fontSize ?? element.fontSize) : undefined;
+  // Only a real change counts; e.g. a drag pinned at the page edge does not.
+  // Below the tolerance nothing is written, so float noise cannot pile up into a change.
+  if (
+    rectsEqual(element.rect, rect) &&
+    rotationsEqual(element.rotation, normalized) &&
+    (element.kind !== "placeDate" || near(element.fontSize, newFontSize!))
+  ) {
+    return true;
+  }
+  state.revision++;
   element.rect = { ...rect };
-  element.rotation = normalizeRotation(rotation);
-  if (fontSize !== undefined && element.kind === "placeDate") element.fontSize = fontSize;
+  element.rotation = normalized;
+  if (element.kind === "placeDate" && newFontSize !== undefined) element.fontSize = newFontSize;
   return true;
 }
 
@@ -254,6 +311,7 @@ export function removeElement(state: DocumentState, id: string): boolean {
   const index = state.elements.findIndex((element) => element.id === id);
   if (index < 0) return false;
   const [removed] = state.elements.splice(index, 1);
+  state.revision++;
   if (state.selectedElementId === id) state.selectedElementId = null;
   if (state.editingElementId === id) state.editingElementId = null;
   if (

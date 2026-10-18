@@ -31,3 +31,7 @@
 - source_spec: `_bmad-output/specs/spec-ecpdfsign/stories/6-place-date-texts.md`
   summary: Verify that pdf-lib/`@pdf-lib/fontkit` subsetting embeds correct outlines for Noto Sans composite glyphs (accents such as Ł, ó, ź, ø, ü) in the saved PDF (severity medium, unverified).
   evidence: Save tests check corners and `getTextContent` strings (ToUnicode) only. Settle by opening a saved "Łódź, Ærøskøbing, Zürich" PDF in Acrobat and Edge, or by comparing the embedded subset's glyph outlines with the source font.
+  resolved_by: `_bmad-output/implementation-artifacts/spec-post-test-fixes.md`. The bug was real, and it hit every glyph after the first odd-length one, not only composite glyphs. Fontkit's subset copies glyphs unpadded but writes short `loca` offsets. Fixed by re-saving the bundled font with 4-byte glyph padding (`src/assets/fonts/README.md`). `src/pdf/save.test.ts` now compares the embedded subset's outlines with the source font.
+- source_spec: `_bmad-output/implementation-artifacts/spec-post-test-fixes.md`
+  summary: Closing the app window discards placed elements without asking, even when `hasUnsavedChanges(state)` is true (severity medium).
+  evidence: Neither `src/main.ts` nor `src/app.ts` handles a window close (`onCloseRequested`/`beforeunload`). The discard question exists only in `openPdf()`. This was there before the spec, which now provides the unsaved-changes signal a close prompt would need.

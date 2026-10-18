@@ -667,6 +667,185 @@ describe("matrix: Open another PDF with elements placed", () => {
   });
 });
 
+describe("post-test fix: ask before discarding only unsaved changes", () => {
+  /** A document with a signature and a text, saved successfully. */
+  async function saved() {
+    const ctx = await withDocument();
+    await ctx.insert(PNG);
+    await ctx.app.insertPlaceDate();
+    const state = ctx.app.getDocument()!.state;
+    await ctx.app.commitPlaceDate(state.editingElementId!, "München", "17.10.2026");
+    await ctx.app.save();
+    expect(ctx.deps.savePdf).toHaveBeenCalledTimes(1);
+    ctx.deps.pickPdf.mockClear();
+    return ctx;
+  }
+
+  it("matrix: Open after save — opens the file dialog directly", async () => {
+    const { app, deps, open } = await saved();
+    // Selection and page changes are no changes.
+    app.selectElement(null);
+    app.selectPage(1);
+    app.selectPage(0);
+    await open("neu.pdf", await makePdf(2));
+    expect(deps.confirmDiscard).not.toHaveBeenCalled();
+    expect(deps.pickPdf).toHaveBeenCalledTimes(1);
+    expect(app.getDocument()!.state.sourceName).toBe("neu.pdf");
+  });
+
+  const changes: Array<[string, (ctx: Awaited<ReturnType<typeof saved>>) => Promise<void> | void]> = [
+    ["a signature is inserted", ({ insert }) => insert(PNG)],
+    ["a text is inserted", ({ app }) => app.insertPlaceDate()],
+    [
+      "an element is moved",
+      ({ app }) => {
+        const [sig] = app.getDocument()!.state.elements;
+        app.updateElement(sig.id, { rect: { ...sig.rect, x: sig.rect.x + 5 }, rotation: sig.rotation });
+      },
+    ],
+    [
+      "an element is resized",
+      ({ app }) => {
+        const [sig] = app.getDocument()!.state.elements;
+        app.updateElement(sig.id, { rect: { ...sig.rect, width: sig.rect.width / 2 }, rotation: sig.rotation });
+      },
+    ],
+    [
+      "an element is rotated",
+      ({ app }) => {
+        const [sig] = app.getDocument()!.state.elements;
+        app.updateElement(sig.id, { rect: sig.rect, rotation: 45 });
+      },
+    ],
+    [
+      "a text is edited",
+      async ({ app }) => {
+        const text = app.getDocument()!.state.elements[1];
+        app.editPlaceDate(text.id);
+        await app.commitPlaceDate(text.id, "Berlin", "17.10.2026");
+      },
+    ],
+    [
+      "an element is removed",
+      ({ app }) => app.removeElement(app.getDocument()!.state.elements[0].id),
+    ],
+  ];
+  for (const [name, change] of changes) {
+    it(`matrix: Change after save — asks when ${name}`, async () => {
+      const ctx = await saved();
+      await change(ctx);
+      ctx.deps.confirmDiscard.mockResolvedValueOnce(false);
+      await ctx.app.openPdf();
+      expect(ctx.deps.confirmDiscard).toHaveBeenCalledTimes(1);
+      expect(ctx.deps.pickPdf).not.toHaveBeenCalled();
+    });
+  }
+
+  it("does not count a text edit that changes nothing, or an Esc", async () => {
+    const { app, deps, open } = await saved();
+    const text = app.getDocument()!.state.elements[1];
+    app.editPlaceDate(text.id);
+    await app.commitPlaceDate(text.id, "München", "17.10.2026");
+    app.editPlaceDate(text.id);
+    app.cancelPlaceDate(text.id);
+    await open("neu.pdf", await makePdf(1));
+    expect(deps.confirmDiscard).not.toHaveBeenCalled();
+  });
+
+  it("matrix: Save not completed — still asks after a cancelled dialog, a failed build or write", async () => {
+    for (const fail of [
+      (deps: ReturnType<typeof setup>["deps"]) => deps.savePdf.mockResolvedValueOnce(null),
+      (deps: ReturnType<typeof setup>["deps"]) => deps.savePdf.mockRejectedValueOnce(new Error("os")),
+      (deps: ReturnType<typeof setup>["deps"]) => deps.buildSignedPdf.mockRejectedValueOnce(new Error("pdf-lib")),
+    ]) {
+      const { app, deps, insert } = await withDocument();
+      await insert(PNG);
+      fail(deps);
+      await app.save();
+      deps.confirmDiscard.mockResolvedValueOnce(false);
+      await app.openPdf();
+      expect(deps.confirmDiscard).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("matrix: Save not completed — still asks after 'Abbrechen' on the signature warning", async () => {
+    const { app, deps, open, insert } = setup();
+    await open("signiert.pdf", await makeSignedPdf([{}]));
+    await insert(PNG);
+    deps.confirmInvalidateSignatures.mockResolvedValueOnce(false);
+    await app.save();
+    expect(deps.confirmInvalidateSignatures).toHaveBeenCalledTimes(1);
+    expect(deps.savePdf).not.toHaveBeenCalled();
+    deps.confirmDiscard.mockResolvedValueOnce(false);
+    await app.openPdf();
+    expect(deps.confirmDiscard).toHaveBeenCalledTimes(1);
+  });
+
+  it("matrix: Save not completed — still asks after the place/date font failed to load", async () => {
+    const { app, deps } = await withDocument();
+    // Placed straight into the model, so the font is first loaded by the save.
+    addPlaceDate(app.getDocument()!.state, {
+      pageIndex: 0,
+      rect: { x: 10, y: 10, width: 60, height: 15 },
+      rotation: 0,
+      place: "Bonn",
+      date: "",
+      fontSize: 11,
+    });
+    deps.loadPlaceDateFont.mockRejectedValueOnce(new Error("404"));
+    await app.save();
+    expect(deps.messages.show).toHaveBeenCalledWith(MESSAGES.fontFailed);
+    expect(deps.savePdf).not.toHaveBeenCalled();
+    deps.confirmDiscard.mockResolvedValueOnce(false);
+    await app.openPdf();
+    expect(deps.confirmDiscard).toHaveBeenCalledTimes(1);
+  });
+
+  it("matrix: Save not completed — a save that fails after an earlier success still asks", async () => {
+    const { app, deps } = await saved();
+    const [sig] = app.getDocument()!.state.elements;
+    app.updateElement(sig.id, { rect: { ...sig.rect, x: sig.rect.x + 5 }, rotation: 0 });
+    deps.savePdf.mockResolvedValueOnce(null);
+    await app.save();
+    deps.confirmDiscard.mockResolvedValueOnce(false);
+    await app.openPdf();
+    expect(deps.confirmDiscard).toHaveBeenCalledTimes(1);
+  });
+
+  it("matrix: Change during save — still asks, and the saved file lacks that change", async () => {
+    const { app, deps, insert } = await withDocument();
+    await insert(PNG);
+    const [element] = app.getDocument()!.state.elements;
+    const rect = { ...element.rect };
+    let finishBuild!: () => void;
+    const gate = new Promise<void>((resolve) => (finishBuild = resolve));
+    deps.buildSignedPdf.mockImplementationOnce(async (...args) => {
+      await gate;
+      return buildSignedPdf(...args);
+    });
+
+    const pending = app.save();
+    await vi.waitFor(() => expect(deps.buildSignedPdf).toHaveBeenCalled());
+    app.updateElement(element.id, { rect: { ...rect, x: rect.x + 100 }, rotation: 0 });
+    finishBuild();
+    await pending;
+    expect(deps.savePdf).toHaveBeenCalledTimes(1);
+    expect(deps.buildSignedPdf.mock.calls[0][1][0].rect).toEqual(rect);
+
+    deps.confirmDiscard.mockResolvedValueOnce(false);
+    await app.openPdf();
+    expect(deps.confirmDiscard).toHaveBeenCalledTimes(1);
+  });
+
+  it("matrix: Open after open — no question for a new PDF with nothing placed", async () => {
+    const { deps, open } = await saved();
+    deps.confirmDiscard.mockClear();
+    await open("a.pdf", await makePdf(1));
+    await open("b.pdf", await makePdf(1));
+    expect(deps.confirmDiscard).not.toHaveBeenCalled();
+  });
+});
+
 // ---- Story 3: save as new PDF --------------------------------------------
 
 /** Page index of every image pdf.js paints in `bytes`, in page order. */
@@ -859,6 +1038,13 @@ describe("'Gespeichert' notice", () => {
     const inserted = await saved();
     await inserted.insert(PNG);
     expect(inserted.deps.messages.hide).toHaveBeenCalled();
+  });
+
+  it("stays after an update that changes nothing (e.g. a drag pinned at the page edge)", async () => {
+    const { app, deps } = await saved();
+    const [element] = app.getDocument()!.state.elements;
+    app.updateElement(element.id, { rect: { ...element.rect }, rotation: element.rotation });
+    expect(deps.messages.hide).not.toHaveBeenCalled();
   });
 
   it("stays while only the selection or page changes", async () => {

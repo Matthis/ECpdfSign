@@ -4,6 +4,9 @@
 // - Enter, a pointerdown anywhere outside the editor, or the focus leaving it
 //   (Tab) commits.
 // - Esc cancels: the text keeps the values it had before this edit.
+// - The overlay's frame around the editor (its margin, handles, "×") and the
+//   ", " separator are not "outside": grabbing them moves, scales or rotates
+//   the text while the edit stays open, with its input and focus.
 // The editor only reports; the app decides (and removes a text with both
 // parts empty). Entf/Backspace typed into the inputs never reach the element
 // shortcuts (see isTextEntry in ./keyboard).
@@ -15,6 +18,22 @@ export interface PlaceDateEditorCallbacks {
   /** `date` is DD.MM.YYYY, or empty if the date input was cleared. */
   commit(id: string, place: string, date: string): void;
   cancel(id: string): void;
+  /**
+   * A left-button pointerdown on the editor outside its inputs (the ", "
+   * separator): the overlay starts moving the text.
+   */
+  grab?(event: PointerEvent): void;
+  /** The editor changed its size by itself (the place input grows with the text). */
+  resized?(): void;
+}
+
+export interface PlaceDateEditorOptions {
+  /**
+   * The frame the overlay draws around the editor. Pointerdowns on it and
+   * focus moving to it do not end the edit. A click on it does not take the
+   * focus (its mousedown is cancelled), and nothing in it is reachable by Tab.
+   */
+  frame?: HTMLElement;
 }
 
 export interface PlaceDateEditor {
@@ -35,8 +54,16 @@ function placeWidth(value: string): string {
   return `${Math.max(value.length, 3) + 1}ch`;
 }
 
-export function createPlaceDateEditor(callbacks: PlaceDateEditorCallbacks): PlaceDateEditor {
+export function createPlaceDateEditor(
+  callbacks: PlaceDateEditorCallbacks,
+  options: PlaceDateEditorOptions = {},
+): PlaceDateEditor {
+  const { frame } = options;
   let editingId: string | null = null;
+  /** The input to give the focus back to if a grab took it anyway. */
+  let lastFocused: HTMLInputElement | null = null;
+  /** A pointer is down on the frame or the separator (moving, scaling, rotating the text). */
+  let grabbing = false;
   /** The date when the editor opened (DD.MM.YYYY or empty), kept if the input is left half-filled. */
   let openedDate = "";
 
@@ -65,11 +92,29 @@ export function createPlaceDateEditor(callbacks: PlaceDateEditorCallbacks): Plac
 
   placeInput.addEventListener("input", () => {
     placeInput.style.width = placeWidth(placeInput.value);
+    callbacks.resized?.();
   });
+  for (const input of [placeInput, dateInput]) {
+    input.addEventListener("focus", () => (lastFocused = input));
+  }
 
-  // Clicks inside neither deselect (page background) nor move the element.
-  root.addEventListener("pointerdown", (event) => event.stopPropagation());
+  const isInput = (target: EventTarget | null) => target === placeInput || target === dateInput;
+
+  // Clicks inside never deselect (page background); outside the inputs they grab the text.
+  root.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+    if (event.button === 0 && !isInput(event.target)) callbacks.grab?.(event);
+  });
   root.addEventListener("dblclick", (event) => event.stopPropagation());
+  // A click outside the inputs (or on the frame) must not take the focus from
+  // them: cancelling pointerdown does not stop that in Chromium, cancelling
+  // mousedown does.
+  root.addEventListener("mousedown", (event) => {
+    if (!isInput(event.target)) event.preventDefault();
+  });
+  frame?.addEventListener("mousedown", (event) => {
+    if (editingId !== null) event.preventDefault();
+  });
 
   root.addEventListener("keydown", (event) => {
     if (event.isComposing) return;
@@ -82,17 +127,42 @@ export function createPlaceDateEditor(callbacks: PlaceDateEditorCallbacks): Plac
     }
   });
 
-  // Focus moving out of the editor (Tab, a click on the separator) ends the edit.
-  // Not when the whole window loses focus: the user comes back to the editor.
+  // Focus moving out of the editor (Tab) ends the edit. Not when the whole
+  // window loses focus (the user comes back to the editor), and not while the
+  // text is being grabbed.
   root.addEventListener("focusout", (event) => {
-    if (event.relatedTarget instanceof Node && root.contains(event.relatedTarget)) return;
+    if (event.relatedTarget instanceof Node && isOwn(event.relatedTarget)) return;
     if (!document.hasFocus()) return;
+    if (grabbing) {
+      // The grab took the focus after all: give it back, the edit goes on.
+      if (event.target instanceof HTMLInputElement) event.target.focus();
+      return;
+    }
     finish("commit");
   });
 
+  /** Inside the editor or its frame. */
+  function isOwn(node: Node): boolean {
+    return root.contains(node) || !!frame?.contains(node);
+  }
+
   function onOutsidePointerDown(event: PointerEvent): void {
-    if (event.target instanceof Node && root.contains(event.target)) return;
+    if (event.target instanceof Node && isOwn(event.target)) {
+      // Only the left button grabs; another button's release may never come
+      // (a context menu can swallow it), which would block the Tab commit.
+      grabbing = event.button === 0 && !isInput(event.target);
+      return;
+    }
     finish("commit");
+  }
+
+  function onPointerRelease(): void {
+    const grabbed = grabbing;
+    grabbing = false;
+    // Keep typing where the user was, should the grab have taken the focus.
+    if (grabbed && editingId !== null && lastFocused && !root.contains(document.activeElement)) {
+      lastFocused.focus();
+    }
   }
 
   function finish(kind: "commit" | "cancel"): void {
@@ -110,8 +180,12 @@ export function createPlaceDateEditor(callbacks: PlaceDateEditorCallbacks): Plac
   function close(): void {
     if (editingId === null) return;
     editingId = null;
+    grabbing = false;
+    lastFocused = null;
     root.hidden = true;
     document.removeEventListener("pointerdown", onOutsidePointerDown, true);
+    document.removeEventListener("pointerup", onPointerRelease, true);
+    document.removeEventListener("pointercancel", onPointerRelease, true);
     // Hand the keyboard back to the page, so Entf/Esc work on elements again.
     if (root.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
   }
@@ -128,9 +202,12 @@ export function createPlaceDateEditor(callbacks: PlaceDateEditorCallbacks): Plac
       placeInput.value = place;
       placeInput.style.width = placeWidth(place);
       dateInput.value = ddMmYyyyToIso(date);
+      lastFocused = placeInput;
       root.hidden = false;
       // Capture phase: runs before anything the pointerdown starts elsewhere.
       document.addEventListener("pointerdown", onOutsidePointerDown, true);
+      document.addEventListener("pointerup", onPointerRelease, true);
+      document.addEventListener("pointercancel", onPointerRelease, true);
       placeInput.focus();
     },
     position(box, fontPx) {

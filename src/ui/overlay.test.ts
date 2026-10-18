@@ -14,8 +14,22 @@ import {
 } from "../model";
 import { isEmptyPlaceDate } from "../placeDate/format";
 import type { PageViewport } from "../pdf/viewport";
-import { boxFromGeometry, boxToGeometry, type Box, type ElementGeometry } from "./geometry";
-import { createOverlay, formatAngle, handleCursor, type Overlay } from "./overlay";
+import {
+  boxCorners,
+  boxFromGeometry,
+  boxToGeometry,
+  type Box,
+  type ElementGeometry,
+  type Point,
+} from "./geometry";
+import {
+  createOverlay,
+  EDIT_FRAME_MARGIN,
+  editFrameBox,
+  formatAngle,
+  handleCursor,
+  type Overlay,
+} from "./overlay";
 
 /**
  * Behaves like a pdf.js viewport of a page with /Rotate 90 and a 400x500
@@ -139,19 +153,19 @@ function pointer(
   x: number,
   y: number,
   init: { button?: number; buttons?: number; shiftKey?: boolean; pointerId?: number } = {},
-): void {
-  target.dispatchEvent(
-    new PointerEvent(type, {
-      bubbles: true,
-      cancelable: true,
-      pointerId: init.pointerId ?? 1,
-      button: init.button ?? 0,
-      buttons: init.buttons ?? (type === "pointerup" ? 0 : 1),
-      shiftKey: init.shiftKey ?? false,
-      clientX: x,
-      clientY: y,
-    }),
-  );
+): PointerEvent {
+  const event = new PointerEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    pointerId: init.pointerId ?? 1,
+    button: init.button ?? 0,
+    buttons: init.buttons ?? (type === "pointerup" ? 0 : 1),
+    shiftKey: init.shiftKey ?? false,
+    clientX: x,
+    clientY: y,
+  });
+  target.dispatchEvent(event);
+  return event;
 }
 
 const BOX: Box = { cx: 200, cy: 150, width: 120, height: 40, rotation: 0 };
@@ -399,6 +413,19 @@ describe("handles", () => {
     expect(box.top + box.height).toBeCloseTo(16);
   });
 
+  it("double-clicking the rotation handle at 0° changes nothing", () => {
+    const { state, add, overlay, frame, callbacks } = setup();
+    const sig = add(0, BOX);
+    selectElement(state, sig.id);
+    overlay.sync(state);
+    const revision = state.revision;
+    frame()
+      .querySelector<HTMLElement>(".frame-rotate-handle")!
+      .dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    expect(callbacks.update).not.toHaveBeenCalled();
+    expect(state.revision).toBe(revision);
+  });
+
   it("double-clicking the rotation handle resets to 0°", () => {
     const { frame, a } = selected();
     const knob = frame().querySelector<HTMLElement>(".frame-rotate-handle")!;
@@ -521,6 +548,22 @@ describe("pages, resizing and blob URLs", () => {
     const back = boxFromGeometry(vp, boxToGeometry(vp, box));
     expect(back.cx).toBeCloseTo(80);
     expect(back.width).toBeCloseTo(50);
+  });
+});
+
+describe("editFrameBox", () => {
+  it("encloses the editor, which starts at the box's top-left corner, with a margin, turned with the box", () => {
+    const box: Box = { cx: 100, cy: 50, width: 80, height: 20, rotation: 90 };
+    const frame = editFrameBox(box, 120);
+    expect(frame.width).toBe(120 + 2 * EDIT_FRAME_MARGIN);
+    expect(frame.height).toBe(20 + 2 * EDIT_FRAME_MARGIN);
+    expect(frame.rotation).toBe(90);
+    // 20 px further along the box's own x axis, which points down at 90°.
+    expect(frame.cx).toBeCloseTo(100);
+    expect(frame.cy).toBeCloseTo(70);
+    // Never narrower than the text itself.
+    expect(editFrameBox(box, 0).width).toBe(80 + 2 * EDIT_FRAME_MARGIN);
+    expect(editFrameBox(box, 0).cy).toBeCloseTo(50);
   });
 });
 
@@ -657,9 +700,9 @@ describe("place/date texts", () => {
     expect(placeInput(stage).value).toBe("München");
     expect(dateInput(stage).value).toBe("2026-10-17");
     expect(document.activeElement).toBe(placeInput(stage));
-    // The text and its frame make room for the inputs.
+    // The inputs take the text's place; the frame stays, around them.
     expect(spans(stage)[0].style.visibility).toBe("hidden");
-    expect(frame().hidden).toBe(true);
+    expect(frame().hidden).toBe(false);
 
     callbacks.cancelPlaceDate(t.id);
     expect(editor(stage).hidden).toBe(true);
@@ -717,6 +760,303 @@ describe("place/date texts", () => {
     dateInput(stage).value = "";
     key(dateInput(stage), "Enter");
     expect(callbacks.commitPlaceDate).toHaveBeenCalledWith(t.id, "München", "");
+  });
+
+  describe("post-test fix: moving, scaling and rotating while editing", () => {
+    const EDITOR_WIDTH = 200;
+
+    /**
+     * A text in edit mode with "Hamburg" typed but not committed. The editor
+     * measures 200 px at the text's 11 px font and, like its `ch`-sized
+     * inputs, grows with the font size.
+     */
+    function editing(box: Box = TEXT_BOX) {
+      const ctx = setup();
+      const root = editor(ctx.stage);
+      Object.defineProperty(root, "offsetWidth", {
+        get: () => (EDITOR_WIDTH * parseFloat(root.style.fontSize || "11")) / 11,
+        configurable: true,
+      });
+      const t = ctx.addText(0, box);
+      ctx.callbacks.editPlaceDate(t.id);
+      placeInput(ctx.stage).value = "Hamburg";
+      return { ...ctx, t };
+    }
+
+    function expectStillEditing(ctx: ReturnType<typeof editing>) {
+      expect(ctx.callbacks.commitPlaceDate).not.toHaveBeenCalled();
+      expect(ctx.callbacks.cancelPlaceDate).not.toHaveBeenCalled();
+      expect(ctx.state.editingElementId).toBe(ctx.t.id);
+      expect(editor(ctx.stage).hidden).toBe(false);
+      expect(placeInput(ctx.stage).value).toBe("Hamburg");
+      expect(document.activeElement).toBe(placeInput(ctx.stage));
+    }
+
+    it("keeps the frame with corners, rotation handle and '×' around the editor plus a margin", () => {
+      const { frame, shownBox } = editing();
+      expect(frame().hidden).toBe(false);
+      const visible = Array.from(frame().querySelectorAll<HTMLElement>(".frame-handle"))
+        .filter((h) => !h.hidden)
+        .map((h) => h.dataset.handle)
+        .sort();
+      expect(visible).toEqual(["ne", "nw", "se", "sw"]);
+      // The editor starts at the text's top-left corner (134, 142.5) and is 200 px wide.
+      expect(shownBox(frame())).toEqual({
+        left: 134 - EDIT_FRAME_MARGIN,
+        top: 142.5 - EDIT_FRAME_MARGIN,
+        width: EDITOR_WIDTH + 2 * EDIT_FRAME_MARGIN,
+        height: 15 + 2 * EDIT_FRAME_MARGIN,
+      });
+    });
+
+    it("grows the frame with the place input", () => {
+      const { stage, frame, shownBox } = editing();
+      Object.defineProperty(editor(stage), "offsetWidth", { value: 260, configurable: true });
+      placeInput(stage).dispatchEvent(new Event("input", { bubbles: true }));
+      expect(shownBox(frame()).width).toBe(260 + 2 * EDIT_FRAME_MARGIN);
+    });
+
+    it("dragging the frame's margin moves the text; the editor follows with its input and focus; Enter commits there", () => {
+      const ctx = editing();
+      const { stage, state, frame, t, callbacks } = ctx;
+      const editorLeft = parseFloat(editor(stage).style.left);
+      const mousedown = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+      pointer(frame(), "pointerdown", 10, 10);
+      frame().dispatchEvent(mousedown);
+      // The input keeps the focus: mousedown is cancelled (that is what keeps it in Chromium).
+      expect(mousedown.defaultPrevented).toBe(true);
+      pointer(frame(), "pointermove", 40, 30);
+      pointer(frame(), "pointerup", 40, 30);
+
+      const moved = boxFromGeometry(rotatedViewport(1), getElement(state, t.id)!);
+      expect(moved.cx).toBeCloseTo(230);
+      expect(moved.cy).toBeCloseTo(170);
+      expectStillEditing(ctx);
+      expect(parseFloat(editor(stage).style.left)).toBeCloseTo(editorLeft + 30);
+
+      key(placeInput(stage), "Enter");
+      expect(callbacks.commitPlaceDate).toHaveBeenCalledWith(t.id, "Hamburg", "17.10.2026");
+      const committed = getElement(state, t.id) as PlaceDateElement;
+      expect(committed.place).toBe("Hamburg");
+      expect(boxFromGeometry(rotatedViewport(1), committed).cx).toBeCloseTo(230);
+      expect(editor(stage).hidden).toBe(true);
+    });
+
+    it("dragging the ', ' separator moves the text too", () => {
+      const ctx = editing();
+      const separator = editor(ctx.stage).querySelector<HTMLElement>(".place-date-separator")!;
+      const background = vi.fn();
+      ctx.container.addEventListener("pointerdown", background);
+      pointer(separator, "pointerdown", 10, 10);
+      // Captured by the frame, which the overlay moves with.
+      pointer(ctx.frame(), "pointermove", 0, 25);
+      pointer(ctx.frame(), "pointerup", 0, 25);
+      expect(background).not.toHaveBeenCalled();
+      const moved = boxFromGeometry(rotatedViewport(1), getElement(ctx.state, ctx.t.id)!);
+      expect(moved.cx).toBeCloseTo(190);
+      expect(moved.cy).toBeCloseTo(165);
+      expectStillEditing(ctx);
+    });
+
+    it("a drag goes through the same keep-on-page rule", () => {
+      const ctx = editing();
+      pointer(ctx.frame(), "pointerdown", 0, 0);
+      pointer(ctx.frame(), "pointermove", -5000, -5000);
+      const box = boxFromGeometry(rotatedViewport(1), getElement(ctx.state, ctx.t.id)!);
+      // 16 px of the text stay on the page (all of its 15 px height).
+      expect(box.cx + box.width / 2).toBeCloseTo(16);
+      expect(box.cy + box.height / 2).toBeCloseTo(15);
+      expectStillEditing(ctx);
+    });
+
+    /** The frame as drawn: its box (from its style) and its corners nw, ne, se, sw. */
+    function drawnFrame(frame: HTMLElement): { box: Box; corners: Point[] } {
+      const left = parseFloat(frame.style.left);
+      const top = parseFloat(frame.style.top);
+      const width = parseFloat(frame.style.width);
+      const height = parseFloat(frame.style.height);
+      const rotation = parseFloat(/rotate\(([-\d.e]+)deg\)/.exec(frame.style.transform)?.[1] ?? "0");
+      const box = { cx: left + width / 2, cy: top + height / 2, width, height, rotation };
+      return { box, corners: boxCorners(box) };
+    }
+
+    function expectPoint(actual: Point, expected: Point) {
+      expect(actual.x).toBeCloseTo(expected.x, 6);
+      expect(actual.y).toBeCloseTo(expected.y, 6);
+    }
+
+    const textOf = (ctx: ReturnType<typeof editing>) => getElement(ctx.state, ctx.t.id) as PlaceDateElement;
+
+    it("a corner scales the text: the grabbed frame corner follows the pointer, the opposite one stays", () => {
+      const ctx = editing();
+      const [nw0, , se0] = drawnFrame(ctx.frame()).corners;
+      // Along the editor's diagonal (200 x 15): 1.5 times as large.
+      const target = { x: se0.x + 100, y: se0.y + 7.5 };
+      pointer(ctx.handle("se"), "pointerdown", se0.x, se0.y);
+      pointer(ctx.handle("se"), "pointermove", target.x, target.y);
+      const [nw, , se] = drawnFrame(ctx.frame()).corners;
+      expectPoint(se, target);
+      expectPoint(nw, nw0);
+      pointer(ctx.handle("se"), "pointerup", target.x, target.y);
+
+      const text = textOf(ctx);
+      expect(text.fontSize).toBeCloseTo(16.5, 9);
+      const box = boxFromGeometry(rotatedViewport(1), text);
+      expect(box.width).toBeCloseTo(132 * 1.5);
+      expect(box.height).toBeCloseTo(15 * 1.5);
+      // The text still starts where the editor does.
+      expect(box.cx - box.width / 2).toBeCloseTo(134);
+      expect(box.cy - box.height / 2).toBeCloseTo(142.5);
+      expect(parseFloat(editor(ctx.stage).style.fontSize)).toBeCloseTo(16.5);
+      expectStillEditing(ctx);
+    });
+
+    it("the nw corner keeps the se frame corner in place", () => {
+      const ctx = editing();
+      const [nw0, , se0] = drawnFrame(ctx.frame()).corners;
+      const target = { x: nw0.x - 100, y: nw0.y - 7.5 };
+      pointer(ctx.handle("nw"), "pointerdown", nw0.x, nw0.y);
+      pointer(ctx.handle("nw"), "pointermove", target.x, target.y);
+      const [nw, , se] = drawnFrame(ctx.frame()).corners;
+      expectPoint(nw, target);
+      expectPoint(se, se0);
+      expect(textOf(ctx).fontSize).toBeCloseTo(16.5, 9);
+      // The text starts at the editor's (moved) top-left corner.
+      expectPoint(
+        { x: parseFloat(editor(ctx.stage).style.left), y: parseFloat(editor(ctx.stage).style.top) },
+        { x: target.x + EDIT_FRAME_MARGIN, y: target.y + EDIT_FRAME_MARGIN },
+      );
+      expectStillEditing(ctx);
+    });
+
+    it("the rotation handle turns the text about the frame's center, the edit stays open", () => {
+      const ctx = editing();
+      const start = drawnFrame(ctx.frame()).box;
+      // The editor area spans 134..334: its center, not the text's (200), is the pivot.
+      expect(start.cx).toBeCloseTo(234);
+      const knob = ctx.frame().querySelector<HTMLElement>(".frame-rotate-handle")!;
+      pointer(knob, "pointerdown", start.cx, start.cy - start.height / 2 - 28);
+      pointer(knob, "pointermove", start.cx + 50, start.cy);
+      expect(textOf(ctx).rotation).toBeCloseTo(90);
+      const turned = drawnFrame(ctx.frame()).box;
+      expect(turned.rotation).toBeCloseTo(90);
+      expectPoint({ x: turned.cx, y: turned.cy }, { x: start.cx, y: start.cy });
+      pointer(knob, "pointerup", start.cx + 50, start.cy);
+      expect(editor(ctx.stage).style.transform).toBe("rotate(90deg)");
+      expectStillEditing(ctx);
+
+      // A double-click turns it back about the same center.
+      knob.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      expect(textOf(ctx).rotation).toBe(0);
+      const back = drawnFrame(ctx.frame()).box;
+      expectPoint({ x: back.cx, y: back.cy }, { x: start.cx, y: start.cy });
+      const box = boxFromGeometry(rotatedViewport(1), textOf(ctx));
+      expect(box.cx).toBeCloseTo(TEXT_BOX.cx);
+      expect(box.cy).toBeCloseTo(TEXT_BOX.cy);
+      expectStillEditing(ctx);
+    });
+
+    it("pointerdown on the frame or a handle is not cancelled while editing (the input keeps the focus)", () => {
+      const ctx = editing();
+      const knob = ctx.frame().querySelector<HTMLElement>(".frame-rotate-handle")!;
+      for (const target of [ctx.frame(), ctx.handle("se"), knob]) {
+        const down = pointer(target, "pointerdown", 0, 0);
+        expect(down.defaultPrevented).toBe(false);
+        pointer(target, "pointerup", 0, 0);
+      }
+      expectStillEditing(ctx);
+    });
+
+    it("pointerdown on the frame or a handle is cancelled while the text is only selected", () => {
+      const { state, addText, overlay, frame, handle } = setup();
+      const t = addText(0, TEXT_BOX);
+      selectElement(state, t.id);
+      overlay.sync(state);
+      const knob = frame().querySelector<HTMLElement>(".frame-rotate-handle")!;
+      for (const target of [frame(), handle("se"), knob]) {
+        const down = pointer(target, "pointerdown", 0, 0);
+        expect(down.defaultPrevented).toBe(true);
+        pointer(target, "pointerup", 0, 0);
+      }
+    });
+
+    it("after a released grab, focus leaving the editor commits again", () => {
+      for (const release of ["pointerup", "pointercancel"]) {
+        const ctx = editing();
+        const outside = document.createElement("button");
+        document.body.append(outside);
+        pointer(ctx.frame(), "pointerdown", 0, 0);
+        pointer(ctx.frame(), release, 0, 0);
+        placeInput(ctx.stage).dispatchEvent(
+          new FocusEvent("focusout", { bubbles: true, relatedTarget: outside }),
+        );
+        expect(ctx.callbacks.commitPlaceDate).toHaveBeenCalledWith(ctx.t.id, "Hamburg", "17.10.2026");
+        document.body.replaceChildren();
+      }
+    });
+
+    it("a right-button pointerdown on the frame does not block the commit when focus leaves", () => {
+      const ctx = editing();
+      const outside = document.createElement("button");
+      document.body.append(outside);
+      // A context menu may swallow the release: no pointerup follows.
+      pointer(ctx.frame(), "pointerdown", 0, 0, { button: 2, buttons: 2 });
+      expect(ctx.callbacks.commitPlaceDate).not.toHaveBeenCalled();
+      placeInput(ctx.stage).dispatchEvent(
+        new FocusEvent("focusout", { bubbles: true, relatedTarget: outside }),
+      );
+      expect(ctx.callbacks.commitPlaceDate).toHaveBeenCalledWith(ctx.t.id, "Hamburg", "17.10.2026");
+    });
+
+    it("a drag started while editing ends with the edit (Enter or Esc): later moves change nothing", () => {
+      for (const endKey of ["Enter", "Escape"]) {
+        for (const grab of ["margin", "se"] as const) {
+          const ctx = editing();
+          const target = grab === "margin" ? ctx.frame() : ctx.handle("se");
+          pointer(target, "pointerdown", 0, 0);
+          pointer(target, "pointermove", 10, 5);
+          key(placeInput(ctx.stage), endKey);
+          expect(editor(ctx.stage).hidden).toBe(true);
+          const ended = { ...textOf(ctx).rect };
+          const updates = ctx.callbacks.update.mock.calls.length;
+          pointer(target, "pointermove", 80, 40);
+          expect(textOf(ctx).rect).toEqual(ended);
+          expect(ctx.callbacks.update).toHaveBeenCalledTimes(updates);
+          document.body.replaceChildren();
+        }
+      }
+    });
+
+    it("the frame's '×' is not reachable by Tab", () => {
+      const { frame } = editing();
+      expect(frame().querySelector<HTMLButtonElement>(".frame-remove")!.tabIndex).toBe(-1);
+    });
+
+    it("the '×' removes the text without committing it", () => {
+      const ctx = editing();
+      const remove = ctx.frame().querySelector<HTMLElement>(".frame-remove")!;
+      pointer(remove, "pointerdown", 0, 0);
+      remove.click();
+      expect(ctx.callbacks.remove).toHaveBeenCalledWith(ctx.t.id);
+      expect(ctx.callbacks.commitPlaceDate).not.toHaveBeenCalled();
+      expect(spans(ctx.stage)).toHaveLength(0);
+      expect(editor(ctx.stage).hidden).toBe(true);
+    });
+
+    it("focus taken by a grab anyway comes back and commits nothing", () => {
+      const ctx = editing();
+      pointer(ctx.frame(), "pointerdown", 0, 0);
+      placeInput(ctx.stage).blur();
+      placeInput(ctx.stage).dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
+      pointer(ctx.frame(), "pointerup", 0, 0);
+      expectStillEditing(ctx);
+    });
+
+    it("a click elsewhere still commits", () => {
+      const ctx = editing();
+      pointer(ctx.container, "pointerdown", 0, 0);
+      expect(ctx.callbacks.commitPlaceDate).toHaveBeenCalledWith(ctx.t.id, "Hamburg", "17.10.2026");
+    });
   });
 
   it("closes the editor when the edited text is not on the shown page any more", () => {

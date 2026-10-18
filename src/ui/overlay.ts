@@ -6,7 +6,10 @@
 //   badge and the text editor stay reachable while an element hangs over the
 //   page edge.
 // Texts get the same frame as signatures, but only corner handles, which
-// scale the font size (never stretching the glyphs).
+// scale the font size (never stretching the glyphs). While a text is edited,
+// its frame stays: it encloses the editor with a small margin, and grabbing
+// that margin (or the ", " separator), a corner or the rotation handle moves,
+// scales or rotates the text without ending the edit.
 // All interaction maths happens in viewport space (./geometry); every change is
 // converted to PDF space once and handed to the app, which updates the model and
 // calls `sync`, so what is drawn is always derived from the model.
@@ -25,6 +28,7 @@ import {
   moveBox,
   pdfUnitInPx,
   resizeBox,
+  resizeFromTopLeft,
   rotateBox,
   scaleTextBox,
   type Box,
@@ -65,6 +69,32 @@ export interface OverlayEnv {
 /** Distance from the frame's top edge to the center of the rotation handle (CSS px). */
 export const ROTATE_HANDLE_OFFSET = 28;
 
+/** Margin between the inline editor and the frame around it (CSS px); grabbing it moves the text. */
+export const EDIT_FRAME_MARGIN = 6;
+
+/**
+ * The area an open editor covers: it starts at the text box's top-left
+ * corner, is `editorWidth` wide (usually wider than the text, never narrower)
+ * and as high as the box, and turns with the box. While editing, scaling and
+ * rotating work on this area, because the frame and its handles are drawn
+ * around it.
+ */
+export function editorArea(box: Box, editorWidth: number): Box {
+  const width = Math.max(editorWidth, box.width);
+  const center = boxPoint(box, (width - box.width) / 2, 0);
+  return { cx: center.x, cy: center.y, width, height: box.height, rotation: box.rotation };
+}
+
+/** The frame around an open editor: its area plus `EDIT_FRAME_MARGIN` on every side. */
+export function editFrameBox(box: Box, editorWidth: number): Box {
+  const area = editorArea(box, editorWidth);
+  return {
+    ...area,
+    width: area.width + 2 * EDIT_FRAME_MARGIN,
+    height: area.height + 2 * EDIT_FRAME_MARGIN,
+  };
+}
+
 /** Direction of each handle from the box center, in degrees clockwise (0° = right). */
 const HANDLE_DIRECTION: Record<Handle, number> = {
   e: 0,
@@ -100,6 +130,11 @@ interface Drag {
   /** Pointer position in viewport space at the start. */
   startPointer: Point;
   startBox: Box;
+  /**
+   * The editor area at the start if the text's editor is open: then scaling
+   * and rotating work on it (the handles sit on the frame around it).
+   */
+  startArea: Box | null;
   /** Font size at the start, for texts. */
   startFontSize: number | null;
 }
@@ -118,11 +153,6 @@ export function createOverlay(
   const images = new Map<string, HTMLImageElement>();
   const texts = new Map<string, HTMLElement>();
   const urls = new Map<string, string>();
-
-  const editor = createPlaceDateEditor({
-    commit: (id, place, date) => callbacks.commitPlaceDate(id, place, date),
-    cancel: (id) => callbacks.cancelPlaceDate(id),
-  });
 
   const imageLayer = document.createElement("div");
   imageLayer.className = "overlay-images";
@@ -159,14 +189,27 @@ export function createOverlay(
   rotateHandle.addEventListener("dblclick", (event) => {
     event.stopPropagation();
     const selected = selectedOnPage();
-    if (!selected || !shown) return;
-    const box = { ...boxFromGeometry(shown.viewport, selected), rotation: 0 };
+    // Already upright: nothing to do (a round trip could still drift a little).
+    if (!selected || !shown || selected.rotation === 0) return;
+    const start = boxFromGeometry(shown.viewport, selected);
+    // While editing, the frame turns back about its own center, under the knob.
+    const box =
+      selected.id === editingOnPage()?.id
+        ? resizeFromTopLeft(
+            { ...editorArea(start, editor.element.offsetWidth), rotation: 0 },
+            start.width,
+            start.height,
+          )
+        : { ...start, rotation: 0 };
     const page = { width: shown.viewport.width, height: shown.viewport.height };
     callbacks.update(selected.id, boxToGeometry(shown.viewport, keepOnPage(box, page)));
   });
 
   const removeButton = document.createElement("button");
   removeButton.type = "button";
+  // Never focused by Tab: while a text is edited, Shift+Tab from its place
+  // input must leave the editor (and commit), not land on "×".
+  removeButton.tabIndex = -1;
   removeButton.className = "frame-remove";
   removeButton.textContent = "×";
   removeButton.title = "Element entfernen (Entf)";
@@ -192,6 +235,17 @@ export function createOverlay(
     const selected = selectedOnPage();
     if (selected?.kind === "placeDate") callbacks.editPlaceDate(selected.id);
   });
+
+  const editor = createPlaceDateEditor(
+    {
+      commit: (id, place, date) => callbacks.commitPlaceDate(id, place, date),
+      cancel: (id) => callbacks.cancelPlaceDate(id),
+      // The ", " separator moves the text like the frame's margin.
+      grab: (event) => startDrag(event, frame, { type: "move" }, editor.editingId ?? undefined),
+      resized: () => layout(),
+    },
+    { frame },
+  );
 
   const badge = document.createElement("div");
   badge.className = "rotation-badge";
@@ -347,13 +401,18 @@ export function createOverlay(
 
     const selected = selectedOnPage();
     if (drag && (!selected || selected.id !== drag.id)) endDrag();
-    // While a text is edited, its inputs take the place of the frame.
-    if (!selected || !shown || selected.id === editing?.id) {
+    // A drag started while editing worked on the editor area; once the edit
+    // ends (Enter, Esc), that area no longer fits the committed text.
+    if (drag?.startArea && editor.editingId !== drag.id) endDrag();
+    if (!selected || !shown) {
       frame.hidden = true;
       badge.hidden = true;
       return;
     }
-    const box = boxFromGeometry(shown.viewport, selected);
+    const elementBox = boxFromGeometry(shown.viewport, selected);
+    // While a text is edited, the frame encloses its (wider) inputs.
+    const box =
+      selected.id === editing?.id ? editFrameBox(elementBox, editor.element.offsetWidth) : elementBox;
     frame.hidden = false;
     placeBox(frame, box);
     for (const [handle, el] of handles) {
@@ -378,13 +437,17 @@ export function createOverlay(
   function startDrag(event: PointerEvent, target: HTMLElement, kind: DragKind, id?: string): void {
     // Other buttons do nothing; the left button selects and grabs.
     if (event.button !== 0 || !state || !shown) return;
-    event.preventDefault();
+    // While the editor is open, its input keeps the focus: then the frame's
+    // and the editor's mousedown are cancelled instead (cancelling pointerdown
+    // would suppress mousedown without keeping the focus in Chromium).
+    if (editor.editingId === null) event.preventDefault();
     event.stopPropagation();
     const elementId = id ?? state.selectedElementId;
     const element = elementId === null ? undefined : getElement(state, elementId);
     if (!element) return;
     endDrag();
     const stageRect = stage.getBoundingClientRect();
+    const startBox = boxFromGeometry(shown.viewport, element);
     drag = {
       id: element.id,
       kind,
@@ -392,7 +455,9 @@ export function createOverlay(
       target,
       startClient: { x: event.clientX, y: event.clientY },
       startPointer: { x: event.clientX - stageRect.left, y: event.clientY - stageRect.top },
-      startBox: boxFromGeometry(shown.viewport, element),
+      startBox,
+      startArea:
+        editor.editingId === element.id ? editorArea(startBox, editor.element.offsetWidth) : null,
       startFontSize: element.kind === "placeDate" ? element.fontSize : null,
     };
     try {
@@ -416,28 +481,42 @@ export function createOverlay(
     }
     const dx = event.clientX - drag.startClient.x;
     const dy = event.clientY - drag.startClient.y;
+    const { startBox, startArea } = drag;
+    const pointer = { x: drag.startPointer.x + dx, y: drag.startPointer.y + dy };
     let box: Box;
     let fontSize: number | undefined;
     switch (drag.kind.type) {
       case "move":
-        box = moveBox(drag.startBox, dx, dy);
+        box = moveBox(startBox, dx, dy);
         break;
       case "resize":
         if (drag.startFontSize !== null) {
           const { handle } = drag.kind;
           if (!isCorner(handle)) return; // texts have no edge handles
-          ({ box, fontSize } = scaleTextBox(drag.startBox, handle, dx, dy, drag.startFontSize));
+          if (startArea) {
+            // Scale the editor area, so the grabbed frame corner follows the
+            // pointer and the opposite one stays put; the text sits at the
+            // area's top-left corner and scales by the same factor.
+            const scaled = scaleTextBox(startArea, handle, dx, dy, drag.startFontSize);
+            const factor = startArea.height > 0 ? scaled.box.height / startArea.height : 1;
+            box = resizeFromTopLeft(scaled.box, startBox.width * factor, startBox.height * factor);
+            fontSize = scaled.fontSize;
+          } else {
+            ({ box, fontSize } = scaleTextBox(startBox, handle, dx, dy, drag.startFontSize));
+          }
         } else {
-          box = resizeBox(drag.startBox, drag.kind.handle, dx, dy);
+          box = resizeBox(startBox, drag.kind.handle, dx, dy);
         }
         break;
       case "rotate":
-        box = rotateBox(
-          drag.startBox,
-          drag.startPointer,
-          { x: drag.startPointer.x + dx, y: drag.startPointer.y + dy },
-          event.shiftKey,
-        );
+        if (startArea) {
+          // Turn the editor area about its center (the frame's, under the knob);
+          // the text keeps its size at the area's top-left corner.
+          const turned = rotateBox(startArea, drag.startPointer, pointer, event.shiftKey);
+          box = resizeFromTopLeft(turned, startBox.width, startBox.height);
+        } else {
+          box = rotateBox(startBox, drag.startPointer, pointer, event.shiftKey);
+        }
         break;
     }
     const page = { width: shown.viewport.width, height: shown.viewport.height };

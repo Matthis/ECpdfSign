@@ -3,6 +3,7 @@
 
 import {
   concatTransformationMatrix,
+  decodePDFRawStream,
   degrees,
   PDFArray,
   PDFDict,
@@ -16,7 +17,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { PlaceDateElement, SignatureElement, StoredImage } from "../model";
 import { formatPlaceDate } from "../placeDate/format";
 import { bundledFont, FONT_BYTES } from "../placeDate/fontFixture.test-data";
-import { textBoxSize } from "../placeDate/metrics";
+import { loadFontkit, TEXT_FEATURES, textBoxSize } from "../placeDate/metrics";
 import { makePng } from "../signature/pngFixtures.test-data";
 import {
   boxCorners,
@@ -469,6 +470,20 @@ async function fontDescriptors(bytes: Uint8Array): Promise<number> {
     .length;
 }
 
+/** The (decoded) FontFile2 of the one font embedded in a saved PDF. */
+async function embeddedFontFile(bytes: Uint8Array): Promise<Uint8Array> {
+  const doc = await PDFDocument.load(bytes, { updateMetadata: false });
+  const files = doc.context
+    .enumerateIndirectObjects()
+    .flatMap(([, obj]) => {
+      if (!(obj instanceof PDFDict) || obj.get(PDFName.of("Type")) !== PDFName.of("FontDescriptor")) return [];
+      const file = doc.context.lookup(obj.get(PDFName.of("FontFile2")));
+      return file instanceof PDFRawStream ? [file] : [];
+    });
+  expect(files).toHaveLength(1);
+  return decodePDFRawStream(files[0]).decode();
+}
+
 describe("buildSignedPdf with place/date texts", () => {
   it("draws texts on a /Rotate 90 page and rotated by 30° at the preview's corners", async () => {
     await textRoundTrip(
@@ -527,6 +542,50 @@ describe("buildSignedPdf with place/date texts", () => {
     expect((await textItems(savedDoc, 0)).map((i) => i.str)).toEqual(["München, 17.10.2026"]);
     expect((await textItems(savedDoc, 1)).map((i) => i.str)).toEqual(["Berlin"]);
     expect(await drawnImages(savedDoc, 0)).toHaveLength(1);
+  });
+
+  it("embeds a subset whose glyphs have the source font's outlines", async () => {
+    // fontkit concatenates subset glyphs unpadded but writes short `loca`
+    // offsets for a small subset, so a glyph with an odd byte length shifted
+    // every glyph after it (the bundled font is re-saved with 4-byte padding).
+    // ToUnicode stays right either way, so extracting the text cannot catch it.
+    const lines = [
+      { place: "München", date: "18.10.2026" },
+      { place: "Łódź, Ærøskøbing, Zürich", date: "" },
+    ];
+    const source = await makeSource([{ rotate: 0 }]);
+    const sourceDoc = await openWithPdfjs(source);
+    const vps = await viewports(sourceDoc, 1);
+    const elements = lines.map((line, i) =>
+      placedText(vps.get(0)!, 0, { cx: 300, cy: 200 + 100 * i, rotation: 0, ...line }),
+    );
+    const saved = await buildSignedPdf(source, elements, IMAGES, vps, FONT_BYTES);
+
+    const fontkit = await loadFontkit();
+    const sourceFont = fontkit.create(FONT_BYTES);
+    const subsetFont = fontkit.create(await embeddedFontFile(saved));
+    /** The glyph's outline as SVG path data. */
+    const outline = (font: typeof sourceFont, glyphId: number) => font.getGlyph(glyphId).path.toSVG();
+
+    const page = await (await openWithPdfjs(saved)).getPage(1);
+    const { fnArray, argsArray } = await page.getOperatorList();
+    // Identity-H with CIDToGIDMap /Identity: each char code is a subset glyph id.
+    const shown = fnArray.flatMap((fn, i) =>
+      fn === OPS.showText
+        ? [((argsArray[i] as [unknown[]])[0] as Array<{ originalCharCode: number }>).map((g) => g.originalCharCode)]
+        : [],
+    );
+    expect(shown).toHaveLength(lines.length);
+    lines.forEach((line, i) => {
+      const text = formatPlaceDate(line.place, line.date);
+      const sourceGlyphs = sourceFont.layout(text, TEXT_FEATURES).glyphs;
+      expect(shown[i], text).toHaveLength(sourceGlyphs.length);
+      sourceGlyphs.forEach((glyph, j) => {
+        expect(outline(subsetFont, shown[i][j]), `${text}[${j}]`).toEqual(outline(sourceFont, glyph.id));
+        // Not just two empty outlines: only the space has none.
+        if (text[j] !== " ") expect(outline(sourceFont, glyph.id).length).toBeGreaterThan(0);
+      });
+    });
   });
 
   it("refuses texts without the font", async () => {

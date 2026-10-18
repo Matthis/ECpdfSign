@@ -28,6 +28,33 @@ describe("place/date font metrics", () => {
     expect(metrics.advance("")).toBe(0);
   });
 
+  it("stores every glyph with an even byte length, as fontkit's subsetting needs", () => {
+    // fontkit copies glyphs unpadded into the subset, yet writes short `loca`
+    // offsets (offset / 2) for small subsets: one odd glyph shifts every glyph
+    // after it. The bundled file is therefore re-saved with 4-byte padding
+    // (see assets/fonts/README.md); a swapped-in font must be too.
+    const view = new DataView(FONT_BYTES.buffer, FONT_BYTES.byteOffset, FONT_BYTES.byteLength);
+    const tables = new Map<string, { offset: number; length: number }>();
+    for (let i = 0; i < view.getUint16(4); i++) {
+      const record = 12 + 16 * i;
+      const tag = String.fromCharCode(...FONT_BYTES.subarray(record, record + 4));
+      tables.set(tag, { offset: view.getUint32(record + 8), length: view.getUint32(record + 12) });
+    }
+    const head = tables.get("head")!;
+    const loca = tables.get("loca")!;
+    const longOffsets = view.getInt16(head.offset + 50) === 1;
+    const glyphCount = view.getUint16(tables.get("maxp")!.offset + 4);
+    const offsetAt = (i: number) =>
+      longOffsets ? view.getUint32(loca.offset + 4 * i) : 2 * view.getUint16(loca.offset + 2 * i);
+    expect(loca.length).toBe((glyphCount + 1) * (longOffsets ? 4 : 2));
+    const odd: number[] = [];
+    for (let i = 0; i < glyphCount; i++) {
+      if ((offsetAt(i + 1) - offsetAt(i)) % 2 !== 0) odd.push(i);
+    }
+    expect(glyphCount).toBeGreaterThan(3000);
+    expect(odd).toEqual([]);
+  });
+
   it("has a glyph for every character of the place names the app must render", async () => {
     const font = (await loadFontkit()).create(FONT_BYTES);
     for (const char of "Łódź Ærøskøbing Zürich München, 0123456789.") {

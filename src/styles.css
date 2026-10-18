@@ -378,7 +378,11 @@ body[aria-busy="true"] {
   display: none;
 }
 
-/* Inline place/date editor: in the text's place, font size and rotation (set from code). */
+/*
+ * Inline place/date editor: in the text's place, font size and rotation (set
+ * from code). The element frame around it (with a margin) marks it; the frame's
+ * margin and the ", " separator move the text.
+ */
 .place-date-editor {
   position: absolute;
   display: flex;
@@ -391,9 +395,13 @@ body[aria-busy="true"] {
   font-kerning: none;
   font-variant-ligatures: none;
   background: rgba(255, 255, 255, 0.9);
-  outline: 1px solid var(--accent);
-  outline-offset: 2px;
   border-radius: 2px;
+}
+
+.place-date-separator {
+  cursor: move;
+  /* Dragging it moves the text, not the page. */
+  touch-action: none;
 }
 
 .place-date-editor input {

@@ -13,7 +13,8 @@ No cloud, no account, no upload. Your documents never leave your machine.
 ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-vanilla-3178C6?logo=typescript&logoColor=white)
 ![Rust](https://img.shields.io/badge/Rust-backend-000000?logo=rust&logoColor=white)
-![Status](https://img.shields.io/badge/status-early%20development-E8962A)
+![Version](https://img.shields.io/badge/version-0.1.0-1D3FBF)
+![Status](https://img.shields.io/badge/status-v1%20feature%20complete-2E9E5B)
 
 </div>
 
@@ -26,7 +27,7 @@ Most "free" PDF signers either live in the cloud or come bundled in heavyweight 
 
 ECpdfSign does one thing well:
 
-> Open a PDF → load your signature → place it → save a signed copy.
+> Open a PDF → insert your signature → place it → save a signed copy.
 
 It is small (a native Tauri app, typically a few MB), fast, and works completely offline.
 
@@ -34,12 +35,51 @@ It is small (a native Tauri app, typically a few MB), fast, and works completely
 
 | | Feature | Status |
 |---|---|---|
-| 📄 | Open a PDF and preview it, including multi-page documents | 🛠️ planned |
-| ✍️ | Load your signature as a PNG with transparency | 🛠️ planned |
-| 🖱️ | Place and resize the signature with the mouse | 🛠️ planned |
-| 📅 | Optionally add date and place, e.g. *München, 17.10.2026* | 🛠️ planned |
-| 💾 | Save as a **new** PDF — the original stays untouched | 🛠️ planned |
-| 🔒 | 100 % local processing, no network access needed | ✅ by design |
+| 📄 | Open a PDF and preview it. Multi-page documents get a thumbnail strip, like a print dialog | ✅ done |
+| ✍️ | Insert your signature as a PNG with transparency. The page shows through, in the preview and in the saved PDF | ✅ done |
+| 🖱️ | Move, scale and rotate signatures with the mouse. Place as many as you like, on any page | ✅ done |
+| 📅 | Add place/date texts such as *München, 17.10.2026*: edited on the page, date from a calendar, any number of them | ✅ done |
+| 🔤 | Full Unicode text (ä, ö, ü, ß, Ł, ø, …) with an embedded Noto Sans subset | ✅ done |
+| 💾 | Save as a **new** PDF (suggested name `<Name>_signiert.pdf`). The original stays untouched unless you explicitly overwrite it | ✅ done |
+| 🎯 | WYSIWYG: the saved PDF matches the preview, including rotated pages and offset crop boxes | ✅ done |
+| ⚠️ | A warning before saving would invalidate existing digital signatures in the PDF | ✅ done |
+| 🛟 | A prompt before opening another PDF discards unsaved work | ✅ done |
+| 🔒 | 100 % local processing: no network access, strict content security policy | ✅ by design |
+
+## Status
+
+**Version 0.1.0: every v1 feature is implemented, tested and in daily use on Windows 11.**
+
+- About 400 automated tests: Vitest for the frontend and PDF output, `cargo test` for the backend.
+- Tested by hand on Windows 11. The macOS build has not been tested yet.
+- Installers are **not code-signed** yet. On first start, Windows SmartScreen and macOS Gatekeeper will warn.
+
+### Known limitations
+
+- Password-protected or encrypted PDFs cannot be opened yet; the app shows a message.
+- Characters that Noto Sans does not have (e.g. CJK, emoji) appear as empty boxes in the saved PDF.
+- Closing the window does not yet ask about unsaved changes.
+- Opaque annotations in the source PDF can cover a placed signature.
+- Some interlaced or animated PNGs are rejected.
+
+## How to use
+
+The toolbar has four buttons, usable in any order:
+
+| Button | What it does |
+|---|---|
+| **PDF Öffnen** | Opens a PDF. Pick a page in the thumbnail strip on the left. |
+| **Ort/Datum einfügen** | Adds a place/date text next to the selected signature, or centered on the page. Type the place, pick the date. |
+| **PNG Unterschrift einfügen** | Adds your signature PNG to the current page. |
+| **Speichern** | Saves a signed copy through a "Save as" dialog. |
+
+Working with placed elements:
+
+- **Move:** drag with the left mouse button held down.
+- **Scale:** corner handles keep the aspect ratio; edge handles stretch a signature. A text only scales, so its glyphs are never distorted.
+- **Rotate:** drag the handle above the frame. It snaps at 0°/90°/180°/270°, and **Shift** rotates in 15° steps. Double-click the handle to reset to 0°.
+- **Edit a text:** double-click it. **Enter** applies the edit, **Esc** discards it. The text can be moved, scaled and rotated while you edit.
+- **Remove:** the **×** on the frame, or **Entf** / **Backspace**.
 
 ## ⚠️ Visual signature vs. digital signature
 
@@ -48,16 +88,18 @@ This is fine for most everyday documents.
 
 It is **not** a cryptographic digital signature (PAdES / advanced or qualified electronic signature under eIDAS).
 If a document legally requires one, use a certificate-based signing tool.
+Saving also invalidates digital signatures that are already in the PDF. ECpdfSign warns you before that happens.
 
 ## Tech stack
 
 | Layer | Technology |
 |---|---|
-| App shell | [Tauri 2](https://tauri.app) — uses the OS webview (WebView2 / WebKit) |
-| Backend | Rust |
-| Frontend | Vanilla TypeScript + Vite |
+| App shell | [Tauri 2](https://tauri.app), using the OS webview (WebView2 / WebKit) |
+| Backend | Rust: file dialogs, reading, atomic writing |
+| Frontend | Vanilla TypeScript + Vite, no UI framework |
 | PDF rendering | [pdf.js](https://mozilla.github.io/pdf.js/) |
-| PDF writing | [pdf-lib](https://pdf-lib.js.org) |
+| PDF writing | [pdf-lib](https://pdf-lib.js.org) + [@pdf-lib/fontkit](https://github.com/Hopding/fontkit) |
+| Font | [Noto Sans](https://notofonts.github.io) (SIL Open Font License 1.1) |
 
 ## Getting started
 
@@ -75,6 +117,13 @@ npm install
 npm run tauri dev
 ```
 
+### Run the tests
+
+```bash
+npm test                      # frontend and PDF output (Vitest)
+cd src-tauri && cargo test    # backend
+```
+
 ### Build an installer
 
 ```bash
@@ -88,28 +137,40 @@ The installers end up in `src-tauri/target/release/bundle/` (`.msi` / `.exe` on 
 ```
 ECpdfSign/
 ├── src/               # Frontend (TypeScript, HTML, CSS)
+│   ├── pdf/           # pdf.js rendering and pdf-lib saving
+│   ├── placeDate/     # Place/date formatting and font metrics
+│   ├── signature/     # PNG checks and embedding
+│   ├── ui/            # Toolbar, thumbnails, page view, overlay, editor
+│   └── assets/fonts/  # Bundled Noto Sans (see its README)
 ├── src-tauri/         # Rust backend and Tauri configuration
 │   └── icons/         # App icons (generated from app-icon.png)
 ├── _bmad/             # BMAD method configuration
-├── _bmad-output/      # Specs and stories created with BMAD
+├── _bmad-output/      # Spec, stories and implementation notes
 ├── app-icon.png       # Source icon (1024×1024)
 └── app-icon.svg       # Editable vector source of the icon
 ```
 
+To regenerate the app icons after changing `app-icon.png`, run `npm run tauri icon app-icon.png`.
+
 ## How this project is built
 
 ECpdfSign is a slim [BMAD](https://github.com/bmad-code-org/BMAD-METHOD) **Spec → Build** project, developed with [Claude Code](https://claude.com/claude-code).
-Specs and stories live in [`_bmad-output/`](./_bmad-output).
+The spec and its six stories live in [`_bmad-output/specs/spec-ecpdfsign`](./_bmad-output/specs/spec-ecpdfsign).
+Every story went through a spec review, implementation, and a three-layer code review.
 
 ## Roadmap
 
-- [ ] Open and preview PDF
-- [ ] Load PNG signature
-- [ ] Place and resize signature
-- [ ] Save signed PDF
-- [ ] Optional date / place
-- [ ] macOS build
-- [ ] Remember last used signature
+- [x] Open and preview PDF, with a thumbnail strip
+- [x] Insert PNG signature
+- [x] Place, scale and rotate signatures
+- [x] Save signed PDF
+- [x] Optional place / date texts
+- [x] Warning before invalidating existing digital signatures
+- [ ] Test the macOS build
+- [ ] Ask about unsaved changes when the window is closed
+- [ ] Remember the last used signature
+- [ ] Password-protected PDFs
+- [ ] Code signing and notarization
 
 ---
 

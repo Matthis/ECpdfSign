@@ -1,4 +1,7 @@
 fn main() {
+    // The window and executable icons are embedded at compile time; rebuild
+    // when `npm run tauri icon` regenerates them.
+    println!("cargo:rerun-if-changed=icons");
     // Declaring the app commands makes them permission-gated, so the
     // capability file has to grant each one explicitly.
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(

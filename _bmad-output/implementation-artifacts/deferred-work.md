@@ -35,3 +35,4 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-post-test-fixes.md`
   summary: Closing the app window discards placed elements without asking, even when `hasUnsavedChanges(state)` is true (severity medium).
   evidence: Neither `src/main.ts` nor `src/app.ts` handles a window close (`onCloseRequested`/`beforeunload`). The discard question exists only in `openPdf()`. This was there before the spec, which now provides the unsaved-changes signal a close prompt would need.
+  declined: 2026-10-18 by the user. Not a wanted feature; do not implement or propose it again.

@@ -48,17 +48,17 @@ It is small (a native Tauri app, typically a few MB), fast, and works completely
 
 ## Status
 
-**Version 0.1.0: every v1 feature is implemented, tested and in daily use on Windows 11.**
+**Version 0.1.0: every v1 feature is implemented, tested and working on Windows 11 and macOS.**
 
-- About 400 automated tests: Vitest for the frontend and PDF output, `cargo test` for the backend.
-- Tested by hand on Windows 11. The macOS build has not been tested yet.
+- Downloads: a portable Windows EXE and a universal macOS DMG (Apple silicon and Intel) on the [Releases](https://github.com/Matthis/ECpdfSign/releases) page.
+- About 400 automated tests, Vitest for the frontend and PDF output and `cargo test` for the backend. They run on Windows and, for every release, on macOS.
+- Tested by hand on Windows 11 and macOS.
 - Installers are **not code-signed** yet. On first start, Windows SmartScreen and macOS Gatekeeper will warn. Code signing is planned (see [Roadmap](#roadmap)).
 
 ### Known limitations
 
 - Password-protected or encrypted PDFs cannot be opened yet; the app shows a message. Support is planned.
 - Characters that Noto Sans does not have (e.g. CJK, emoji) appear as empty boxes in the saved PDF.
-- Closing the window does not yet ask about unsaved changes.
 - Opaque annotations in the source PDF can cover a placed signature.
 - Some special PNGs (interlaced, animated APNG, …) are rejected. Support is planned.
 
@@ -166,8 +166,7 @@ Every story went through a spec review, implementation, and a three-layer code r
 - [x] Save signed PDF
 - [x] Optional place / date texts
 - [x] Warning before invalidating existing digital signatures
-- [ ] Test the macOS build
-- [ ] Ask about unsaved changes when the window is closed
+- [x] Windows (portable EXE) and macOS (universal DMG) releases
 - [ ] Remember the last used signature
 - [ ] **Code-signed app:** a signed Windows installer and a signed and notarized macOS app, so there are no SmartScreen or Gatekeeper warnings
 - [ ] **Password-protected PDFs:** open encrypted PDFs after asking for the password, and save the signed copy

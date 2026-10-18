@@ -52,15 +52,15 @@ It is small (a native Tauri app, typically a few MB), fast, and works completely
 
 - About 400 automated tests: Vitest for the frontend and PDF output, `cargo test` for the backend.
 - Tested by hand on Windows 11. The macOS build has not been tested yet.
-- Installers are **not code-signed** yet. On first start, Windows SmartScreen and macOS Gatekeeper will warn.
+- Installers are **not code-signed** yet. On first start, Windows SmartScreen and macOS Gatekeeper will warn. Code signing is planned (see [Roadmap](#roadmap)).
 
 ### Known limitations
 
-- Password-protected or encrypted PDFs cannot be opened yet; the app shows a message.
+- Password-protected or encrypted PDFs cannot be opened yet; the app shows a message. Support is planned.
 - Characters that Noto Sans does not have (e.g. CJK, emoji) appear as empty boxes in the saved PDF.
 - Closing the window does not yet ask about unsaved changes.
 - Opaque annotations in the source PDF can cover a placed signature.
-- Some interlaced or animated PNGs are rejected.
+- Some special PNGs (interlaced, animated APNG, …) are rejected. Support is planned.
 
 ## How to use
 
@@ -169,8 +169,9 @@ Every story went through a spec review, implementation, and a three-layer code r
 - [ ] Test the macOS build
 - [ ] Ask about unsaved changes when the window is closed
 - [ ] Remember the last used signature
-- [ ] Password-protected PDFs
-- [ ] Code signing and notarization
+- [ ] **Code-signed app:** a signed Windows installer and a signed and notarized macOS app, so there are no SmartScreen or Gatekeeper warnings
+- [ ] **Password-protected PDFs:** open encrypted PDFs after asking for the password, and save the signed copy
+- [ ] **Special PNGs:** accept interlaced, animated (APNG, first frame) and other unusual PNG variants as signatures
 
 ---
 

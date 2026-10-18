@@ -52,6 +52,9 @@
   },
   "bundle": {
     "active": true,
+    "copyright": "Copyright (C) 2026 Matthis. Licensed under GPL-3.0-only.",
+    "license": "GPL-3.0-only",
+    "licenseFile": "../LICENSE",
     "targets": "all",
     "icon": [
       "icons/32x32.png",

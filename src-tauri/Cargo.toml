@@ -1,8 +1,10 @@
 [package]
 name = "ecpdfsign"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Sign PDFs locally with your handwritten signature (PNG)"
+authors = ["Matthis"]
+license = "GPL-3.0-only"
+repository = "https://github.com/Matthis/ECpdfSign"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

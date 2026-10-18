@@ -15,6 +15,7 @@ No cloud, no account, no upload. Your documents never leave your machine.
 ![Rust](https://img.shields.io/badge/Rust-backend-000000?logo=rust&logoColor=white)
 ![Version](https://img.shields.io/badge/version-0.1.0-1D3FBF)
 ![Status](https://img.shields.io/badge/status-v1%20feature%20complete-2E9E5B)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-E8962A)](LICENSE)
 
 [![Download for Windows](https://img.shields.io/badge/Download-Windows%20(portable%20EXE)-1D3FBF?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Matthis/ECpdfSign/releases/latest)
 [![Download for macOS](https://img.shields.io/badge/Download-macOS%20(universal%20DMG)-1D3FBF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Matthis/ECpdfSign/releases/latest)
@@ -176,6 +177,23 @@ Every story went through a spec review, implementation, and a three-layer code r
 - [ ] **Code-signed app:** a signed Windows installer and a signed and notarized macOS app, so there are no SmartScreen or Gatekeeper warnings
 - [ ] **Password-protected PDFs:** open encrypted PDFs after asking for the password, and save the signed copy
 - [ ] **Special PNGs:** accept interlaced, animated (APNG, first frame) and other unusual PNG variants as signatures
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Before a first pull request can be merged, contributors sign the [Contributor License Agreement](CLA.md) with a single comment.
+
+## License
+
+Copyright (C) 2026 Matthis
+
+ECpdfSign is free software: you can redistribute it and/or modify it under the terms of the
+[GNU General Public License v3.0](LICENSE) as published by the Free Software Foundation.
+It is distributed in the hope that it will be useful, but **without any warranty**; without even the implied warranty of merchantability or fitness for a particular purpose.
+
+For use under other terms, for example in proprietary software, commercial licenses are available on request.
+
+Third-party components keep their own licenses (Tauri, pdf-lib and fontkit: MIT/Apache-2.0; pdf.js: Apache-2.0; Noto Sans: SIL Open Font License 1.1).
 
 ---
 
